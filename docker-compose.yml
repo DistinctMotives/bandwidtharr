@@ -1,0 +1,14 @@
+services:
+  speedarr:
+    build: .
+    container_name: speedarr
+    restart: unless-stopped
+    networks:
+      - speedarr_net
+    env_file:
+      - .env
+
+networks:
+  speedarr_net:
+    external: true
+    name: ${DOCKER_NETWORK:?set DOCKER_NETWORK in .env}

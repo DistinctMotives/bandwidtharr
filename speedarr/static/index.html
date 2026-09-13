@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>speedarr</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --border: #2a2e37;
+    --text: #e6e8eb;
+    --muted: #8b93a1;
+    --qbit: #4f9dff;
+    --sab: #ff9f4f;
+    --budget: #6b7280;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 20px;
+    letter-spacing: 0.02em;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  .cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  @media (max-width: 480px) {
+    .cards { grid-template-columns: 1fr; }
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card .label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .card .speed { font-size: 26px; font-weight: 600; line-height: 1.1; }
+  .card .limit { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .bar-track {
+    margin-top: 10px;
+    height: 6px;
+    border-radius: 3px;
+    background: #10121600;
+    background: rgba(255,255,255,0.06);
+    overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+  .graph-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .graph-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .legend { display: flex; gap: 16px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .total-line { color: var(--text); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>speedarr</h1>
+  <div class="cards">
+    <div class="card">
+      <div class="label"><span class="dot" style="background:var(--qbit)"></span>qBittorrent</div>
+      <div class="speed" id="qbit-speed">&mdash;</div>
+      <div class="limit" id="qbit-limit">limit &mdash;</div>
+      <div class="bar-track"><div class="bar-fill" id="qbit-bar" style="background:var(--qbit); width:0%"></div></div>
+    </div>
+    <div class="card">
+      <div class="label"><span class="dot" style="background:var(--sab)"></span>SABnzbd</div>
+      <div class="speed" id="sab-speed">&mdash;</div>
+      <div class="limit" id="sab-limit">limit &mdash;</div>
+      <div class="bar-track"><div class="bar-fill" id="sab-bar" style="background:var(--sab); width:0%"></div></div>
+    </div>
+  </div>
+
+  <div class="graph-card">
+    <div class="graph-header">
+      <div class="legend">
+        <span><span class="dot" style="background:var(--qbit)"></span>qBittorrent</span>
+        <span><span class="dot" style="background:var(--sab)"></span>SABnzbd</span>
+        <span><span class="dot" style="background:var(--budget)"></span>budget</span>
+      </div>
+      <div class="total-line" id="total-line">&mdash;</div>
+    </div>
+    <canvas id="graph"></canvas>
+  </div>
+</div>
+
+<script>
+const qbitSpeedEl = document.getElementById('qbit-speed');
+const qbitLimitEl = document.getElementById('qbit-limit');
+const qbitBarEl = document.getElementById('qbit-bar');
+const sabSpeedEl = document.getElementById('sab-speed');
+const sabLimitEl = document.getElementById('sab-limit');
+const sabBarEl = document.getElementById('sab-bar');
+const totalLineEl = document.getElementById('total-line');
+const canvas = document.getElementById('graph');
+const ctx = canvas.getContext('2d');
+
+function bytesToMbps(b) { return (b * 8) / 1_000_000; }
+function fmt(mbps) { return mbps.toFixed(0) + ' Mbps'; }
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener('resize', resizeCanvas);
+
+function drawGraph(history, total) {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  const pad = { top: 10, right: 10, bottom: 18, left: 40 };
+  const plotW = w - pad.left - pad.right;
+  const plotH = h - pad.top - pad.bottom;
+
+  ctx.clearRect(0, 0, w, h);
+
+  const totalMbps = bytesToMbps(total);
+  const points = history.map(([t, qb, sb]) => [t, bytesToMbps(qb), bytesToMbps(sb)]);
+  const maxY = Math.max(totalMbps * 1.1, ...points.map(p => p[1] + p[2]), 10);
+
+  const tMin = points.length ? points[0][0] : 0;
+  const tMax = points.length ? points[points.length - 1][0] : 1;
+  const tSpan = Math.max(tMax - tMin, 1);
+
+  const x = (t) => pad.left + ((t - tMin) / tSpan) * plotW;
+  const y = (v) => pad.top + plotH - (v / maxY) * plotH;
+
+  // gridlines + y-axis labels
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillStyle = '#8b93a1';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  const steps = 4;
+  for (let i = 0; i <= steps; i++) {
+    const v = (maxY / steps) * i;
+    const yy = y(v);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, yy);
+    ctx.lineTo(pad.left + plotW, yy);
+    ctx.stroke();
+    ctx.fillText(v.toFixed(0), pad.left - 6, yy + 3);
+  }
+
+  if (points.length > 1) {
+    // stacked area: qbit on bottom, sab stacked on top
+    ctx.beginPath();
+    ctx.moveTo(x(points[0][0]), y(0));
+    points.forEach(p => ctx.lineTo(x(p[0]), y(p[1])));
+    ctx.lineTo(x(points[points.length - 1][0]), y(0));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(79,157,255,0.35)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(x(points[0][0]), y(points[0][1]));
+    points.forEach(p => ctx.lineTo(x(p[0]), y(p[1] + p[2])));
+    for (let i = points.length - 1; i >= 0; i--) {
+      ctx.lineTo(x(points[i][0]), y(points[i][1]));
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(255,159,79,0.35)';
+    ctx.fill();
+  }
+
+  // budget line
+  ctx.beginPath();
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = '#6b7280';
+  ctx.moveTo(pad.left, y(totalMbps));
+  ctx.lineTo(pad.left + plotW, y(totalMbps));
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    const s = await res.json();
+
+    const qbitSpeed = bytesToMbps(s.qbit_speed);
+    const qbitLimit = bytesToMbps(s.qbit_limit);
+    const sabSpeed = bytesToMbps(s.sab_speed);
+    const sabLimit = bytesToMbps(s.sab_limit);
+    const total = bytesToMbps(s.total);
+
+    qbitSpeedEl.textContent = fmt(qbitSpeed);
+    qbitLimitEl.textContent = 'limit ' + fmt(qbitLimit);
+    qbitBarEl.style.width = Math.min(100, (qbitSpeed / Math.max(qbitLimit, 1)) * 100) + '%';
+
+    sabSpeedEl.textContent = fmt(sabSpeed);
+    sabLimitEl.textContent = 'limit ' + fmt(sabLimit);
+    sabBarEl.style.width = Math.min(100, (sabSpeed / Math.max(sabLimit, 1)) * 100) + '%';
+
+    totalLineEl.textContent = fmt(qbitSpeed + sabSpeed) + ' / ' + fmt(total) + ' budget';
+
+    drawGraph(s.history, s.total);
+  } catch (e) {
+    totalLineEl.textContent = 'connection lost';
+  }
+}
+
+resizeCanvas();
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>
