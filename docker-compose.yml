@@ -1,5 +1,6 @@
 services:
   speedarr:
+    image: ghcr.io/distinctmotives/speedarr:latest
     build: .
     container_name: speedarr
     restart: unless-stopped

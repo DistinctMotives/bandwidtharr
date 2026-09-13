@@ -29,12 +29,15 @@ against the budget line) served from inside the container.
 
 ## Quickstart
 
+Pulls the prebuilt image from GHCR (`ghcr.io/distinctmotives/speedarr`) by
+default -- no local build needed.
+
 ```sh
-git clone <this repo>
+git clone https://github.com/DistinctMotives/speedarr.git
 cd speedarr
 cp .env.example .env
 # edit .env: DOCKER_NETWORK, QBIT_URL/SAB_URL, SAB_API_KEY, TOTAL_LIMIT_MBPS
-docker compose up -d --build
+docker compose up -d
 ```
 
 speedarr will join `DOCKER_NETWORK` and start managing both apps' speed
@@ -83,6 +86,16 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt pytest
 .venv/bin/python -m pytest tests/
 ```
+
+To run against your local changes instead of the published image:
+
+```sh
+docker compose up -d --build
+```
+
+Pushes to `main` automatically rebuild and publish
+`ghcr.io/distinctmotives/speedarr:latest` via GitHub Actions
+(`.github/workflows/docker-publish.yml`).
 
 The allocation logic (`speedarr/allocator.py`) is a pure function with no
 I/O, so it's fully covered by fast unit tests independent of the qBittorrent
