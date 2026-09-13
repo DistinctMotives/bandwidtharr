@@ -2,14 +2,14 @@ import logging
 import os
 import time
 
-from speedarr import webserver
-from speedarr.allocator import allocate
-from speedarr.qbittorrent import QBittorrentClient
-from speedarr.sabnzbd import SabnzbdClient
-from speedarr.state import SharedState
+from bandwidtharr import webserver
+from bandwidtharr.allocator import allocate
+from bandwidtharr.qbittorrent import QBittorrentClient
+from bandwidtharr.sabnzbd import SabnzbdClient
+from bandwidtharr.state import SharedState
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("speedarr")
+log = logging.getLogger("bandwidtharr")
 
 
 def mbps_to_bytes(mbps: float) -> float:
@@ -64,7 +64,7 @@ def main() -> None:
             )
 
             # On the first cycle, force-apply regardless of the change threshold so a
-            # stale pre-existing limit (set manually, or from a previous speedarr run
+            # stale pre-existing limit (set manually, or from a previous bandwidtharr run
             # with different settings) doesn't linger just because it happens to fall
             # within the normal hysteresis band.
             if first_cycle or abs(new_qbit_limit - qbit_limit) >= total * change_threshold:

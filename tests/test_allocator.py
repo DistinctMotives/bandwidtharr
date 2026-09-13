@@ -1,4 +1,4 @@
-from speedarr.allocator import allocate
+from bandwidtharr.allocator import allocate
 
 TOTAL = 100_000_000.0  # 100 MB/s ~ 800 Mbps
 FLOOR = 5_000_000.0

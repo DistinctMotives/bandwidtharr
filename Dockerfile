@@ -3,8 +3,8 @@ FROM python:3.13-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY speedarr/ ./speedarr/
+COPY bandwidtharr/ ./bandwidtharr/
 
 EXPOSE 80
 
-CMD ["python", "-m", "speedarr.main"]
+CMD ["python", "-m", "bandwidtharr.main"]

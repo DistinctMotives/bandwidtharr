@@ -1,15 +1,15 @@
 services:
-  speedarr:
-    image: ghcr.io/distinctmotives/speedarr:latest
+  bandwidtharr:
+    image: ghcr.io/distinctmotives/bandwidtharr:latest
     build: .
-    container_name: speedarr
+    container_name: bandwidtharr
     restart: unless-stopped
     networks:
-      - speedarr_net
+      - bandwidtharr_net
     env_file:
       - .env
 
 networks:
-  speedarr_net:
+  bandwidtharr_net:
     external: true
     name: ${DOCKER_NETWORK:?set DOCKER_NETWORK in .env}

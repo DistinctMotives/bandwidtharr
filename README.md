@@ -1,4 +1,4 @@
-# speedarr
+# bandwidtharr
 
 Dynamic bandwidth arbitration between qBittorrent and SABnzbd, so they share a
 fixed total budget instead of fighting each other for your connection.
@@ -6,8 +6,8 @@ fixed total budget instead of fighting each other for your connection.
 If you run both a torrent client and a Usenet client, setting a static speed
 limit on each wastes bandwidth (only one running at a time still gets capped)
 and no limit at all means they contend for your whole pipe when both run
-together. speedarr polls both apps every few seconds and adjusts their speed
-limits live:
+together. bandwidtharr polls both apps every few seconds and adjusts their
+speed limits live:
 
 - If only one is downloading, it gets the **entire** budget.
 - If both are downloading at once, the budget is split **proportional to
@@ -22,25 +22,25 @@ against the budget line) served from inside the container.
 
 - Docker + Docker Compose
 - qBittorrent and SABnzbd already running as containers on a shared Docker
-  network speedarr can join (tested against the `binhex/arch-qbittorrentvpn`
+  network bandwidtharr can join (tested against the `binhex/arch-qbittorrentvpn`
   and `binhex/arch-sabnzbdvpn` images, but any qBittorrent/SABnzbd instance
   reachable by URL works)
 - SABnzbd API key (Config -> General -> API Key)
 
 ## Quickstart
 
-Pulls the prebuilt image from GHCR (`ghcr.io/distinctmotives/speedarr`) by
+Pulls the prebuilt image from GHCR (`ghcr.io/distinctmotives/bandwidtharr`) by
 default -- no local build needed.
 
 ```sh
-git clone https://github.com/DistinctMotives/speedarr.git
-cd speedarr
+git clone https://github.com/DistinctMotives/bandwidtharr.git
+cd bandwidtharr
 cp .env.example .env
 # edit .env: DOCKER_NETWORK, QBIT_URL/SAB_URL, SAB_API_KEY, TOTAL_LIMIT_MBPS
 docker compose up -d
 ```
 
-speedarr will join `DOCKER_NETWORK` and start managing both apps' speed
+bandwidtharr will join `DOCKER_NETWORK` and start managing both apps' speed
 limits immediately, including correcting any stale/manual limit already set
 on either one.
 
@@ -74,7 +74,7 @@ publish it to the host instead, add to `docker-compose.yml`:
 
 ```yaml
 services:
-  speedarr:
+  bandwidtharr:
     ports:
       - "8880:80"
 ```
@@ -94,10 +94,10 @@ docker compose up -d --build
 ```
 
 Pushes to `main` automatically rebuild and publish
-`ghcr.io/distinctmotives/speedarr:latest` via GitHub Actions
+`ghcr.io/distinctmotives/bandwidtharr:latest` via GitHub Actions
 (`.github/workflows/docker-publish.yml`).
 
-The allocation logic (`speedarr/allocator.py`) is a pure function with no
+The allocation logic (`bandwidtharr/allocator.py`) is a pure function with no
 I/O, so it's fully covered by fast unit tests independent of the qBittorrent
 and SABnzbd API clients.
 

@@ -3,7 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 
-from speedarr.state import SharedState
+from bandwidtharr.state import SharedState
 
 INDEX_HTML = (Path(__file__).parent / "static" / "index.html").read_bytes()
 
