@@ -1,5 +1,11 @@
 # bandwidtharr
 
+> **Built with AI.** This entire project -- code, tests, CI, packaging -- was
+> written by Claude (Anthropic) working with a human directing and reviewing
+> it. It works for the author's own setup (binhex qBittorrent/SABnzbd on
+> Unraid), but hasn't seen wide use. Read the code, and use it at your own
+> risk -- do with it as you please.
+
 Dynamic bandwidth arbitration between qBittorrent and SABnzbd, so they share a
 fixed total budget instead of fighting each other for your connection.
 
