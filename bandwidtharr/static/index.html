@@ -54,8 +54,15 @@
     margin-bottom: 8px;
   }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    margin-left: auto; background: var(--muted);
+  }
+  .status-dot.ok { background: #3ecf6d; }
+  .status-dot.error { background: #ef4444; }
   .card .speed { font-size: 26px; font-weight: 600; line-height: 1.1; }
   .card .limit { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .card .limit.error { color: #ef4444; }
   .bar-track {
     margin-top: 10px;
     height: 6px;
@@ -90,13 +97,19 @@
   <h1>bandwidtharr</h1>
   <div class="cards">
     <div class="card">
-      <div class="label"><span class="dot" style="background:var(--qbit)"></span>qBittorrent</div>
+      <div class="label">
+        <span class="dot" style="background:var(--qbit)"></span>qBittorrent
+        <span class="status-dot" id="qbit-status-dot" title="connecting..."></span>
+      </div>
       <div class="speed" id="qbit-speed">&mdash;</div>
       <div class="limit" id="qbit-limit">limit &mdash;</div>
       <div class="bar-track"><div class="bar-fill" id="qbit-bar" style="background:var(--qbit); width:0%"></div></div>
     </div>
     <div class="card">
-      <div class="label"><span class="dot" style="background:var(--sab)"></span>SABnzbd</div>
+      <div class="label">
+        <span class="dot" style="background:var(--sab)"></span>SABnzbd
+        <span class="status-dot" id="sab-status-dot" title="connecting..."></span>
+      </div>
       <div class="speed" id="sab-speed">&mdash;</div>
       <div class="limit" id="sab-limit">limit &mdash;</div>
       <div class="bar-track"><div class="bar-fill" id="sab-bar" style="background:var(--sab); width:0%"></div></div>
@@ -120,9 +133,11 @@
 const qbitSpeedEl = document.getElementById('qbit-speed');
 const qbitLimitEl = document.getElementById('qbit-limit');
 const qbitBarEl = document.getElementById('qbit-bar');
+const qbitStatusDotEl = document.getElementById('qbit-status-dot');
 const sabSpeedEl = document.getElementById('sab-speed');
 const sabLimitEl = document.getElementById('sab-limit');
 const sabBarEl = document.getElementById('sab-bar');
+const sabStatusDotEl = document.getElementById('sab-status-dot');
 const totalLineEl = document.getElementById('total-line');
 const canvas = document.getElementById('graph');
 const ctx = canvas.getContext('2d');
@@ -206,6 +221,22 @@ function drawGraph(history, total) {
   ctx.setLineDash([]);
 }
 
+function updateCard(speedEl, limitEl, barEl, statusDotEl, speed, limit, ok, error) {
+  statusDotEl.classList.toggle('ok', ok);
+  statusDotEl.classList.toggle('error', !ok);
+  statusDotEl.title = ok ? 'connected' : ('unreachable: ' + (error || 'unknown error'));
+
+  if (ok) {
+    speedEl.textContent = fmt(speed);
+    limitEl.textContent = 'limit ' + fmt(limit);
+    limitEl.classList.remove('error');
+    barEl.style.width = Math.min(100, (speed / Math.max(limit, 1)) * 100) + '%';
+  } else {
+    limitEl.textContent = '⚠ ' + (error || 'unreachable');
+    limitEl.classList.add('error');
+  }
+}
+
 async function poll() {
   try {
     const res = await fetch('/api/state', { cache: 'no-store' });
@@ -217,19 +248,23 @@ async function poll() {
     const sabLimit = bytesToMbps(s.sab_limit);
     const total = bytesToMbps(s.total);
 
-    qbitSpeedEl.textContent = fmt(qbitSpeed);
-    qbitLimitEl.textContent = 'limit ' + fmt(qbitLimit);
-    qbitBarEl.style.width = Math.min(100, (qbitSpeed / Math.max(qbitLimit, 1)) * 100) + '%';
+    updateCard(qbitSpeedEl, qbitLimitEl, qbitBarEl, qbitStatusDotEl, qbitSpeed, qbitLimit, s.qbit_ok, s.qbit_error);
+    updateCard(sabSpeedEl, sabLimitEl, sabBarEl, sabStatusDotEl, sabSpeed, sabLimit, s.sab_ok, s.sab_error);
 
-    sabSpeedEl.textContent = fmt(sabSpeed);
-    sabLimitEl.textContent = 'limit ' + fmt(sabLimit);
-    sabBarEl.style.width = Math.min(100, (sabSpeed / Math.max(sabLimit, 1)) * 100) + '%';
-
-    totalLineEl.textContent = fmt(qbitSpeed + sabSpeed) + ' / ' + fmt(total) + ' budget';
+    if (s.qbit_ok && s.sab_ok) {
+      totalLineEl.textContent = fmt(qbitSpeed + sabSpeed) + ' / ' + fmt(total) + ' budget';
+    } else {
+      totalLineEl.textContent = 'not arbitrating (waiting on both apps)';
+    }
 
     drawGraph(s.history, s.total);
   } catch (e) {
-    totalLineEl.textContent = 'connection lost';
+    totalLineEl.textContent = 'dashboard connection lost';
+    [qbitStatusDotEl, sabStatusDotEl].forEach(el => {
+      el.classList.remove('ok');
+      el.classList.add('error');
+      el.title = 'lost contact with bandwidtharr itself';
+    });
   }
 }
 

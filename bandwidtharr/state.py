@@ -14,15 +14,34 @@ class SharedState:
         self._qbit_limit = 0.0
         self._sab_speed = 0.0
         self._sab_limit = 0.0
+        self._qbit_ok = False
+        self._sab_ok = False
+        self._qbit_error: str | None = None
+        self._sab_error: str | None = None
         self._history: deque = deque(maxlen=history_len)
 
-    def update(self, total: float, qbit_speed: float, qbit_limit: float, sab_speed: float, sab_limit: float) -> None:
+    def update(
+        self,
+        total: float,
+        qbit_speed: float,
+        qbit_limit: float,
+        sab_speed: float,
+        sab_limit: float,
+        qbit_ok: bool,
+        sab_ok: bool,
+        qbit_error: str | None = None,
+        sab_error: str | None = None,
+    ) -> None:
         with self._lock:
             self._total = total
             self._qbit_speed = qbit_speed
             self._qbit_limit = qbit_limit
             self._sab_speed = sab_speed
             self._sab_limit = sab_limit
+            self._qbit_ok = qbit_ok
+            self._sab_ok = sab_ok
+            self._qbit_error = qbit_error
+            self._sab_error = sab_error
             self._history.append((time.time(), qbit_speed, sab_speed))
 
     def snapshot(self) -> dict:
@@ -33,5 +52,9 @@ class SharedState:
                 "qbit_limit": self._qbit_limit,
                 "sab_speed": self._sab_speed,
                 "sab_limit": self._sab_limit,
+                "qbit_ok": self._qbit_ok,
+                "sab_ok": self._sab_ok,
+                "qbit_error": self._qbit_error,
+                "sab_error": self._sab_error,
                 "history": list(self._history),
             }

@@ -34,12 +34,15 @@ def main() -> None:
         api_key=os.environ["SAB_API_KEY"],
     )
 
-    qbit_limit = qbit.get_download_limit() or total
-    sab_limit = sab.get_download_limit() or total
-
+    # Start the dashboard before touching either app's API, so it's reachable
+    # (and can show a disconnected status) even if qBittorrent/SABnzbd aren't
+    # up yet -- there's no guaranteed startup ordering between containers.
     state = SharedState()
     web_port = int(os.environ.get("WEB_PORT", "80"))
     webserver.start(state, web_port)
+
+    qbit_limit = total
+    sab_limit = total
 
     log.info(
         "starting: total=%.0fMbps floor=%.0fMbps poll=%ss web_port=%s",
@@ -48,10 +51,28 @@ def main() -> None:
 
     first_cycle = True
     while True:
+        qbit_ok, sab_ok = True, True
+        qbit_error, sab_error = None, None
+        qbit_speed, sab_speed = 0.0, 0.0
+
         try:
             qbit_speed = qbit.get_download_speed()
-            sab_speed = sab.get_download_speed()
+        except Exception as e:
+            qbit_ok = False
+            qbit_error = str(e)
+            log.warning("qbit unreachable: %s", e)
 
+        try:
+            sab_speed = sab.get_download_speed()
+        except Exception as e:
+            sab_ok = False
+            sab_error = str(e)
+            log.warning("sab unreachable: %s", e)
+
+        # Only arbitrate once both are reachable -- allocate() needs both
+        # sides' real speed to mean anything, and there's nothing useful to
+        # do with just one.
+        if qbit_ok and sab_ok:
             new_qbit_limit, new_sab_limit = allocate(
                 qbit_speed=qbit_speed,
                 sab_speed=sab_speed,
@@ -63,29 +84,48 @@ def main() -> None:
                 probe_step=probe_step,
             )
 
-            # On the first cycle, force-apply regardless of the change threshold so a
-            # stale pre-existing limit (set manually, or from a previous bandwidtharr run
-            # with different settings) doesn't linger just because it happens to fall
-            # within the normal hysteresis band.
+            # On the first successful cycle, force-apply regardless of the change
+            # threshold so a stale pre-existing limit (set manually, or from a
+            # previous bandwidtharr run with different settings) doesn't linger
+            # just because it happens to fall within the normal hysteresis band.
             if first_cycle or abs(new_qbit_limit - qbit_limit) >= total * change_threshold:
-                qbit.set_download_limit(int(new_qbit_limit))
-                log.info("qbit limit %.0f -> %.0f Mbps", qbit_limit * 8 / 1_000_000, new_qbit_limit * 8 / 1_000_000)
-                qbit_limit = new_qbit_limit
+                try:
+                    qbit.set_download_limit(int(new_qbit_limit))
+                    log.info(
+                        "qbit limit %.0f -> %.0f Mbps",
+                        qbit_limit * 8 / 1_000_000, new_qbit_limit * 8 / 1_000_000,
+                    )
+                    qbit_limit = new_qbit_limit
+                except Exception as e:
+                    qbit_ok = False
+                    qbit_error = str(e)
+                    log.warning("failed to set qbit limit: %s", e)
+
             if first_cycle or abs(new_sab_limit - sab_limit) >= total * change_threshold:
-                sab.set_download_limit(int(new_sab_limit))
-                log.info("sab limit %.0f -> %.0f Mbps", sab_limit * 8 / 1_000_000, new_sab_limit * 8 / 1_000_000)
-                sab_limit = new_sab_limit
+                try:
+                    sab.set_download_limit(int(new_sab_limit))
+                    log.info(
+                        "sab limit %.0f -> %.0f Mbps",
+                        sab_limit * 8 / 1_000_000, new_sab_limit * 8 / 1_000_000,
+                    )
+                    sab_limit = new_sab_limit
+                except Exception as e:
+                    sab_ok = False
+                    sab_error = str(e)
+                    log.warning("failed to set sab limit: %s", e)
+
             first_cycle = False
 
-            state.update(total, qbit_speed, qbit_limit, sab_speed, sab_limit)
+        state.update(
+            total, qbit_speed, qbit_limit, sab_speed, sab_limit,
+            qbit_ok=qbit_ok, sab_ok=sab_ok, qbit_error=qbit_error, sab_error=sab_error,
+        )
 
-            log.debug(
-                "qbit speed=%.1fMbps limit=%.1fMbps | sab speed=%.1fMbps limit=%.1fMbps",
-                qbit_speed * 8 / 1_000_000, qbit_limit * 8 / 1_000_000,
-                sab_speed * 8 / 1_000_000, sab_limit * 8 / 1_000_000,
-            )
-        except Exception:
-            log.exception("poll cycle failed, will retry")
+        log.debug(
+            "qbit speed=%.1fMbps limit=%.1fMbps ok=%s | sab speed=%.1fMbps limit=%.1fMbps ok=%s",
+            qbit_speed * 8 / 1_000_000, qbit_limit * 8 / 1_000_000, qbit_ok,
+            sab_speed * 8 / 1_000_000, sab_limit * 8 / 1_000_000, sab_ok,
+        )
 
         time.sleep(poll_interval)
 
