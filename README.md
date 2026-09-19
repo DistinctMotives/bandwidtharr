@@ -68,6 +68,13 @@ All configuration is via `.env` (see `.env.example`):
 | `PROBE_STEP_MBPS`            | How much extra demand to assume for an app saturating its own cap      | `40` |
 | `CHANGE_THRESHOLD_FRACTION`  | Minimum relative change before a new limit is actually applied (hysteresis, avoids noisy API calls) | `0.05` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
+| `LINK_DETECTOR`               | `none` or `public_ip` -- see [WAN failover detection](#wan-failover-detection)    | `none` |
+| `BACKUP_TOTAL_LIMIT_MBPS`     | Budget to use while on the backup link (required if `LINK_DETECTOR` is set)  | *(none)* |
+| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active                                | `30` |
+| `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
+| `PRIMARY_ISP_MATCH` / `BACKUP_ISP_MATCH` | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
+| `IP_LOOKUP_URL`               | IP-info endpoint used by ISP-name matching                              | `http://ip-api.com/json/?fields=isp,org,as` |
+| `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used by the default DNS-only IP-baseline check    | `myip.opendns.com` / `208.67.222.222` |
 
 ## Web dashboard
 
@@ -84,6 +91,40 @@ services:
     ports:
       - "8880:80"
 ```
+
+## WAN failover detection
+
+If your router fails over to a backup link (Starlink, 5G, a cellular
+hotspot...) the fixed `TOTAL_LIMIT_MBPS` budget is usually way too high for
+that link, so bandwidtharr can optionally detect the failover and swap in a
+separate `BACKUP_TOTAL_LIMIT_MBPS` while it's active. This works with any
+router -- it doesn't assume a FortiGate or any other vendor -- since it
+detects the failover from the outside, by noticing that your public egress
+path changed, not by talking to your router.
+
+Off by default. Set `LINK_DETECTOR=public_ip` and `BACKUP_TOTAL_LIMIT_MBPS`
+to turn it on; set `LINK_DETECTOR` back to `none` (or remove it) to turn it
+off again -- bandwidtharr then makes no DNS/HTTP calls for link detection and
+the dashboard's link badge disappears. Two detection modes, chosen
+automatically by whether you've set an ISP match:
+
+- **Default (no config beyond the two above):** a DNS-only check -- no
+  third-party HTTP call -- that remembers the public IP seen when
+  bandwidtharr started (assumed to be the primary link) and treats any later,
+  persistent change as a failover. Simple and private, but a primary ISP that
+  itself rotates your dynamic IP can look like a failover; `LINK_FAILOVER_CONFIRM_COUNT`
+  (default 2 consecutive checks) guards against a single blip, but a longer-lived
+  IP rotation could still misfire.
+- **Opt-in ISP matching:** set `PRIMARY_ISP_MATCH` and/or `BACKUP_ISP_MATCH`
+  (comma-separated, case-insensitive substrings, e.g.
+  `BACKUP_ISP_MATCH=Starlink,T-Mobile`) and bandwidtharr instead calls
+  `IP_LOOKUP_URL` (an IP-info API, default `ip-api.com`) each check to read
+  the actual ISP/org name behind your current public IP. More robust against
+  ordinary IP rotation on the primary link, at the cost of sending your
+  public IP to that third-party API on every check.
+
+Either way, every confirmed switch (in both directions) is logged at `INFO`
+and shown live on the dashboard.
 
 ## Development
 

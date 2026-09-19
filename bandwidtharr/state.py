@@ -18,6 +18,10 @@ class SharedState:
         self._sab_ok = False
         self._qbit_error: str | None = None
         self._sab_error: str | None = None
+        self._link_enabled = False
+        self._active_link = "primary"
+        self._link_ok = True
+        self._link_error: str | None = None
         self._history: deque = deque(maxlen=history_len)
 
     def update(
@@ -31,6 +35,10 @@ class SharedState:
         sab_ok: bool,
         qbit_error: str | None = None,
         sab_error: str | None = None,
+        link_enabled: bool = False,
+        active_link: str = "primary",
+        link_ok: bool = True,
+        link_error: str | None = None,
     ) -> None:
         with self._lock:
             self._total = total
@@ -42,6 +50,10 @@ class SharedState:
             self._sab_ok = sab_ok
             self._qbit_error = qbit_error
             self._sab_error = sab_error
+            self._link_enabled = link_enabled
+            self._active_link = active_link
+            self._link_ok = link_ok
+            self._link_error = link_error
             self._history.append((time.time(), qbit_speed, sab_speed))
 
     def snapshot(self) -> dict:
@@ -56,5 +68,9 @@ class SharedState:
                 "sab_ok": self._sab_ok,
                 "qbit_error": self._qbit_error,
                 "sab_error": self._sab_error,
+                "link_enabled": self._link_enabled,
+                "active_link": self._active_link,
+                "link_ok": self._link_ok,
+                "link_error": self._link_error,
                 "history": list(self._history),
             }
