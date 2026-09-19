@@ -1,15 +1,24 @@
+import json
+import logging
 import threading
 import time
 from collections import deque
 
 from bandwidtharr.link_detector import PRIMARY
 
+log = logging.getLogger("bandwidtharr.state")
+
 
 class SharedState:
     """Thread-safe snapshot of the latest poll cycle, read by the web server
     and written by the main polling loop."""
 
-    def __init__(self, history_len: int = 600, link_events_len: int = 50):
+    def __init__(
+        self,
+        history_len: int = 600,
+        link_events_len: int = 50,
+        link_events_file: str | None = None,
+    ):
         self._lock = threading.Lock()
         self._total = 0.0
         self._qbit_speed = 0.0
@@ -28,7 +37,34 @@ class SharedState:
         self._next_link_check: float | None = None
         self._downloading = False
         self._history: deque = deque(maxlen=history_len)
-        self._link_events: deque = deque(maxlen=link_events_len)
+        self._link_events_file = link_events_file
+        # deque(iterable, maxlen=N) keeps only the last N items of whatever
+        # was loaded, so a file with more than link_events_len entries (e.g.
+        # from a run with a larger cap) is trimmed automatically.
+        self._link_events: deque = deque(self._load_link_events(), maxlen=link_events_len)
+
+    def _load_link_events(self) -> list:
+        if not self._link_events_file:
+            return []
+        try:
+            with open(self._link_events_file) as f:
+                events = [tuple(e) for e in json.load(f)]
+            log.info(
+                "state: loaded %d persisted failover log entries from %s",
+                len(events), self._link_events_file,
+            )
+            return events
+        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError):
+            return []
+
+    def _save_link_events(self) -> None:
+        if not self._link_events_file:
+            return
+        try:
+            with open(self._link_events_file, "w") as f:
+                json.dump(list(self._link_events), f)
+        except OSError as e:
+            log.warning("state: failed to persist failover log to %s: %s", self._link_events_file, e)
 
     def update(
         self,
@@ -70,6 +106,7 @@ class SharedState:
             self._history.append((time.time(), qbit_speed, sab_speed))
             if link_event is not None:
                 self._link_events.append(link_event)
+                self._save_link_events()
 
     def snapshot(self) -> dict:
         with self._lock:

@@ -135,9 +135,11 @@ automatically by whether you've set an ISP match:
 Either way, every confirmed switch (in both directions) is logged at `INFO`
 and shown live on the dashboard, which displays the current link state,
 whether it's currently treating traffic as downloading or idle, when it was
-last/next checked, and a rolling log of recent failover/failback events with
-timestamps. The detected IP/ISP itself is never sent to the browser -- it's
-only ever logged server-side (`docker logs`).
+last/next checked, and a rolling log (last 50 events) of recent
+failover/failback events with timestamps -- also persisted to the
+`bandwidtharr_state` volume, so it survives restarts and updates the same
+way the learned baseline IP does. The detected IP/ISP itself is never sent
+to the browser -- it's only ever logged server-side (`docker logs`).
 
 ## Development
 

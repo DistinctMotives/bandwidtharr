@@ -83,7 +83,7 @@ def main() -> None:
     # Start the dashboard before touching either app's API, so it's reachable
     # (and can show a disconnected status) even if qBittorrent/SABnzbd aren't
     # up yet -- there's no guaranteed startup ordering between containers.
-    state = SharedState()
+    state = SharedState(link_events_file="/app/state/failover_log.json")
     web_port = int(os.environ.get("WEB_PORT", "80"))
     webserver.start(state, web_port)
 
