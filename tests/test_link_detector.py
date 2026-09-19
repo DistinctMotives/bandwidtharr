@@ -1,4 +1,14 @@
-from bandwidtharr.link_detector import BACKUP, PRIMARY, LinkStateTracker, classify_isp, next_link_check_decision
+import json
+import time
+
+from bandwidtharr.link_detector import (
+    BACKUP,
+    PRIMARY,
+    DnsBaselineDetector,
+    LinkStateTracker,
+    classify_isp,
+    next_link_check_decision,
+)
 
 
 def test_classify_isp_backup_match_wins():
@@ -94,3 +104,32 @@ def test_next_link_check_not_pulled_forward_while_still_idle():
         now=100, next_link_check=980, is_active=False, active_interval=30, idle_interval=900,
     )
     assert due is False
+
+
+def test_dns_baseline_detector_persists_and_reloads(tmp_path):
+    state_file = str(tmp_path / "baseline.json")
+    first = DnsBaselineDetector("host", "resolver", state_file=state_file)
+    first._save_baseline("1.2.3.4")
+
+    second = DnsBaselineDetector("host", "resolver", state_file=state_file)
+    assert second._baseline_ip == "1.2.3.4"
+
+
+def test_dns_baseline_detector_ignores_stale_persisted_file(tmp_path):
+    state_file = tmp_path / "baseline.json"
+    state_file.write_text(json.dumps({"ip": "9.9.9.9", "saved_at": time.time() - 999_999}))
+
+    detector = DnsBaselineDetector("host", "resolver", state_file=str(state_file), max_persisted_age=86400)
+    assert detector._baseline_ip is None
+
+
+def test_dns_baseline_detector_no_state_file_is_pure_in_memory():
+    detector = DnsBaselineDetector("host", "resolver")
+    assert detector._baseline_ip is None
+    assert detector.state_file is None
+
+
+def test_dns_baseline_detector_missing_file_starts_fresh(tmp_path):
+    state_file = str(tmp_path / "does_not_exist.json")
+    detector = DnsBaselineDetector("host", "resolver", state_file=state_file)
+    assert detector._baseline_ip is None

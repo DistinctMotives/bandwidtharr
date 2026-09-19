@@ -17,8 +17,13 @@ def _make_handler(state: SharedState):
             if self.path in ("/", "/index.html"):
                 self._send(200, INDEX_HTML, "text/html; charset=utf-8")
             elif self.path == "/api/state":
-                body = json.dumps(state.snapshot()).encode()
-                self._send(200, body, "application/json")
+                snapshot = state.snapshot()
+                # Non-2xx whenever either app is currently unreachable, so
+                # the Dockerfile's HEALTHCHECK (which fails on HTTPError)
+                # reflects real health, not just "the web server is alive."
+                status = 200 if snapshot["qbit_ok"] and snapshot["sab_ok"] else 503
+                body = json.dumps(snapshot).encode()
+                self._send(status, body, "application/json")
             else:
                 self._send(404, b"not found", "text/plain")
 

@@ -12,10 +12,12 @@ Same conventions as qbittorrent.py/sabnzbd.py: raise on any check failure,
 never guess -- the caller decides what "unknown" means.
 """
 
+import json
 import logging
 import random
 import socket
 import struct
+import time
 
 import requests
 
@@ -114,19 +116,54 @@ class DnsBaselineDetector(LinkDetector):
     several consecutive differing checks (see LinkStateTracker) before
     actually treating it as one; anyone who wants to avoid this entirely can
     opt into IspMatchDetector instead.
+
+    If `state_file` is given, the learned baseline is persisted there (and
+    loaded back on construction if present and not older than
+    `max_persisted_age`), so a container restart while already on the
+    backup link doesn't wrongly re-baseline backup-as-primary.
     """
 
-    def __init__(self, lookup_host: str, resolver: str, timeout: float = 5.0):
+    def __init__(
+        self,
+        lookup_host: str,
+        resolver: str,
+        timeout: float = 5.0,
+        state_file: str | None = None,
+        max_persisted_age: float = 86400,
+    ):
         self.lookup_host = lookup_host
         self.resolver = resolver
         self.timeout = timeout
-        self._baseline_ip: str | None = None
+        self.state_file = state_file
+        self.max_persisted_age = max_persisted_age
+        self._baseline_ip: str | None = self._load_baseline() if state_file else None
+
+    def _load_baseline(self) -> str | None:
+        try:
+            with open(self.state_file) as f:
+                data = json.load(f)
+            if time.time() - data["saved_at"] > self.max_persisted_age:
+                return None
+            log.info("link_detector: loaded persisted primary IP %s from %s", data["ip"], self.state_file)
+            return data["ip"]
+        except (FileNotFoundError, KeyError, ValueError, OSError, json.JSONDecodeError):
+            return None
+
+    def _save_baseline(self, ip: str) -> None:
+        if not self.state_file:
+            return
+        try:
+            with open(self.state_file, "w") as f:
+                json.dump({"ip": ip, "saved_at": time.time()}, f)
+        except OSError as e:
+            log.warning("link_detector: failed to persist baseline IP to %s: %s", self.state_file, e)
 
     def check(self) -> tuple[str, str]:
         ip = _query_a_record(self.lookup_host, self.resolver, self.timeout)
         if self._baseline_ip is None:
             self._baseline_ip = ip
             log.info("link_detector: baselined primary public IP as %s", ip)
+            self._save_baseline(ip)
             return PRIMARY, ip
         return (PRIMARY if ip == self._baseline_ip else BACKUP), ip
 
@@ -243,4 +280,4 @@ def build_link_detector(env: dict) -> LinkDetector:
 
     lookup_host = env.get("DNS_LOOKUP_HOST", "myip.opendns.com")
     resolver = env.get("DNS_RESOLVER", "208.67.222.222")
-    return DnsBaselineDetector(lookup_host, resolver)
+    return DnsBaselineDetector(lookup_host, resolver, state_file="/app/state/baseline_ip.json")

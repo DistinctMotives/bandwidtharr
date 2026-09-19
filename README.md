@@ -118,7 +118,12 @@ automatically by whether you've set an ISP match:
   persistent change as a failover. Simple and private, but a primary ISP that
   itself rotates your dynamic IP can look like a failover; `LINK_FAILOVER_CONFIRM_COUNT`
   (default 2 consecutive checks) guards against a single blip, but a longer-lived
-  IP rotation could still misfire.
+  IP rotation could still misfire. This learned IP is persisted to the
+  `bandwidtharr_state` volume (see `docker-compose.yml`) so a container
+  restart or update while already failed over doesn't wrongly re-baseline
+  the backup link as primary -- a persisted value older than 24h is treated
+  as stale and re-learned fresh instead, in case it was legitimately out of
+  date rather than a failover.
 - **Opt-in ISP matching:** set `PRIMARY_ISP_MATCH` and/or `BACKUP_ISP_MATCH`
   (comma-separated, case-insensitive substrings, e.g.
   `BACKUP_ISP_MATCH=Starlink,T-Mobile`) and bandwidtharr instead calls

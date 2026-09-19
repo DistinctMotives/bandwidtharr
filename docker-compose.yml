@@ -10,8 +10,13 @@ services:
       - bandwidtharr_net
     env_file:
       - .env
+    volumes:
+      - bandwidtharr_state:/app/state
 
 networks:
   bandwidtharr_net:
     external: true
     name: ${DOCKER_NETWORK:?set DOCKER_NETWORK in .env}
+
+volumes:
+  bandwidtharr_state:
