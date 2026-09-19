@@ -87,7 +87,8 @@ def main() -> None:
     web_port = int(os.environ.get("WEB_PORT", "80"))
     webserver.start(state, web_port)
 
-    qbit_limit = total
+    qbit_fair_share = total  # allocate()'s own bookkeeping, untouched by overshoot correction
+    qbit_limit = total  # what's actually applied to qBittorrent's API (fair share minus overshoot penalty)
     sab_limit = total
 
     log.info(
@@ -195,10 +196,10 @@ def main() -> None:
         # sides' real speed to mean anything, and there's nothing useful to
         # do with just one.
         if qbit_ok and sab_ok:
-            new_qbit_limit, new_sab_limit, saturating = allocate(
+            new_qbit_fair_share, new_sab_limit, saturating = allocate(
                 qbit_speed=qbit_speed,
                 sab_speed=sab_speed,
-                qbit_limit=qbit_limit,
+                qbit_limit=qbit_fair_share,
                 sab_limit=sab_limit,
                 total=effective_total,
                 active_threshold=active_threshold,
@@ -214,16 +215,21 @@ def main() -> None:
                 first_cycle or link_changed
                 or now - last_reallocation_at >= reallocation_settle_seconds
             )
-            fairness_changed = new_qbit_limit != qbit_limit or new_sab_limit != sab_limit
+            fairness_changed = new_qbit_fair_share != qbit_fair_share or new_sab_limit != sab_limit
 
             # See OvershootCompensator's docstring for why qBittorrent
             # specifically needs this. Always applies immediately, never
             # gated by the settle timer above -- staying under budget
             # matters more than how quickly unused headroom gets reclaimed
-            # and handed to the other app.
+            # and handed to the other app. Derived from qbit_fair_share (not
+            # fed back into allocate() itself) so the overshoot fudge never
+            # distorts next cycle's fairness classification or midpoint
+            # calculation -- the two corrections stay independent instead of
+            # compounding each other.
             overshoot_penalty = overshoot_compensator.update(combined_speed, effective_total)
+            new_qbit_limit = new_qbit_fair_share
             if overshoot_penalty > 0:
-                new_qbit_limit = max(effective_total * MIN_SHARE_FRACTION, new_qbit_limit - overshoot_penalty)
+                new_qbit_limit = max(effective_total * MIN_SHARE_FRACTION, new_qbit_fair_share - overshoot_penalty)
 
             if overshoot_penalty > 0 or (fairness_allowed and new_qbit_limit != qbit_limit):
                 try:
@@ -253,6 +259,7 @@ def main() -> None:
                     log.warning("failed to set sab limit: %s", e)
 
             if fairness_changed and fairness_allowed:
+                qbit_fair_share = new_qbit_fair_share
                 last_reallocation_at = now
 
             first_cycle = False
