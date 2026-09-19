@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   schedule:
     # Rebuilds weekly even with no code changes, so upstream security
     # patches to the python:3.13-slim base image (a floating tag) still
@@ -31,6 +33,7 @@ jobs:
 
   build-and-push:
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
