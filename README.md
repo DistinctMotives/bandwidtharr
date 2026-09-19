@@ -81,7 +81,7 @@ All configuration is via `.env` (see `.env.example`):
 | `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
-| `PRIMARY_ISP_MATCH` / `BACKUP_ISP_MATCH` | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
+| `BACKUP_ISP_MATCH`            | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
 | `IP_LOOKUP_URL`               | IP-info endpoint used by ISP-name matching                              | `http://ip-api.com/json/?fields=isp,org,as,query` |
 | `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used by the default DNS-only IP-baseline check    | `myip.opendns.com` / `208.67.222.222` |
 
@@ -129,13 +129,24 @@ automatically by whether you've set an ISP match:
   the backup link as primary -- a persisted value older than 24h is treated
   as stale and re-learned fresh instead, in case it was legitimately out of
   date rather than a failover.
-- **Opt-in ISP matching:** set `PRIMARY_ISP_MATCH` and/or `BACKUP_ISP_MATCH`
-  (comma-separated, case-insensitive substrings, e.g.
-  `BACKUP_ISP_MATCH=Starlink,T-Mobile`) and bandwidtharr instead calls
-  `IP_LOOKUP_URL` (an IP-info API, default `ip-api.com`) each check to read
-  the actual ISP/org name behind your current public IP. More robust against
-  ordinary IP rotation on the primary link, at the cost of sending your
-  public IP to that third-party API on every check.
+- **Opt-in ISP matching:** set `BACKUP_ISP_MATCH` (comma-separated,
+  case-insensitive substrings, e.g. `BACKUP_ISP_MATCH=Starlink,T-Mobile`)
+  and bandwidtharr instead calls `IP_LOOKUP_URL` (an IP-info API, default
+  `ip-api.com`) each check to read the actual ISP/org name behind your
+  current public IP -- backup if it matches, primary otherwise (including
+  if the lookup ever returns something unrecognized, so a hiccup fails
+  toward *not* throttling rather than toward throttling). More robust
+  against ordinary IP rotation on the primary link, at the cost of sending
+  your public IP to that third-party API on every check.
+
+  Don't guess the value -- query
+  `http://ip-api.com/json/<your-backup-link-IP>?fields=isp,org,as` to see
+  what's actually returned. The carrier name isn't always in the `isp`
+  field: for Starlink, `isp` is SpaceX's corporate name and "Starlink"
+  only shows up in `org`. List multiple comma-separated terms for
+  robustness (e.g. `Starlink,SpaceX,Space Exploration`) rather than a
+  single guess, so a change in one field's exact wording doesn't silently
+  break the match.
 
 Either way, every confirmed switch (in both directions) is logged at `INFO`
 and shown live on the dashboard, which displays the current link state,

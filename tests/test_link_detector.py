@@ -11,29 +11,22 @@ from bandwidtharr.link_detector import (
 )
 
 
-def test_classify_isp_backup_match_wins():
-    assert classify_isp("Starlink Internet Services", "Comcast", "Starlink") == BACKUP
+def test_classify_isp_backup_match_is_backup():
+    assert classify_isp("Starlink Internet Services", "Starlink") == BACKUP
 
 
-def test_classify_isp_no_backup_match_falls_through_to_primary_match():
-    assert classify_isp("Comcast Cable", "Comcast", "Starlink") == PRIMARY
+def test_classify_isp_no_match_is_primary():
+    # unrecognized ISP with no backup match -> fails safe toward primary,
+    # not toward backup
+    assert classify_isp("Comcast Cable", "Starlink") == PRIMARY
 
 
-def test_classify_isp_primary_set_but_no_match_is_backup():
-    # different ISP than configured primary, no backup list configured -> treat as backup
-    assert classify_isp("Verizon Wireless", "Comcast", "") == BACKUP
-
-
-def test_classify_isp_neither_configured_is_primary():
-    assert classify_isp("Anything At All", "", "") == PRIMARY
-
-
-def test_classify_isp_only_backup_configured_no_match_is_primary():
-    assert classify_isp("Comcast Cable", "", "Starlink") == PRIMARY
+def test_classify_isp_no_backup_configured_is_primary():
+    assert classify_isp("Anything At All", "") == PRIMARY
 
 
 def test_classify_isp_case_insensitive_and_multi_value():
-    assert classify_isp("T-Mobile 5G Home Internet", "", "starlink, t-mobile") == BACKUP
+    assert classify_isp("T-Mobile 5G Home Internet", "starlink, t-mobile") == BACKUP
 
 
 def test_link_state_tracker_requires_confirm_count_before_flipping():

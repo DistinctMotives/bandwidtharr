@@ -168,35 +168,27 @@ class DnsBaselineDetector(LinkDetector):
         return (PRIMARY if ip == self._baseline_ip else BACKUP), ip
 
 
-def classify_isp(isp_string: str, primary_match: str, backup_match: str) -> str:
-    """Pure classifier: decide PRIMARY vs BACKUP for an ISP/org/AS string
-    given comma-separated, case-insensitive substrings to match against.
-
-    - If `backup_match` is set and any term matches -> BACKUP.
-    - Else if `primary_match` is set -> PRIMARY if a term matches, else BACKUP.
-    - Else (only backup_match set, no match) -> PRIMARY.
+def classify_isp(isp_string: str, backup_match: str) -> str:
+    """Pure classifier: BACKUP if any comma-separated, case-insensitive
+    substring in `backup_match` is found in the ISP/org/AS string, else
+    PRIMARY -- including when `backup_match` is unset or matches nothing,
+    so an unrecognized ISP always fails safe toward PRIMARY (no wrongful
+    throttling) rather than toward BACKUP.
     """
     haystack = (isp_string or "").lower()
     backup_terms = [t.strip().lower() for t in backup_match.split(",") if t.strip()]
-    primary_terms = [t.strip().lower() for t in primary_match.split(",") if t.strip()]
-
-    if backup_terms and any(term in haystack for term in backup_terms):
-        return BACKUP
-    if primary_terms:
-        return PRIMARY if any(term in haystack for term in primary_terms) else BACKUP
-    return PRIMARY
+    return BACKUP if backup_terms and any(term in haystack for term in backup_terms) else PRIMARY
 
 
 class IspMatchDetector(LinkDetector):
     """Opt-in: calls a configurable IP-info HTTP endpoint and classifies the
-    returned ISP/org name against configured primary/backup substrings.
-    Unlike DnsBaselineDetector, this sends the router's public IP to a
-    third-party HTTP service on every check -- only used when the user
-    explicitly sets PRIMARY_ISP_MATCH or BACKUP_ISP_MATCH."""
+    returned ISP/org name against a configured backup substring. Unlike
+    DnsBaselineDetector, this sends the router's public IP to a third-party
+    HTTP service on every check -- only used when the user explicitly sets
+    BACKUP_ISP_MATCH."""
 
-    def __init__(self, lookup_url: str, primary_match: str, backup_match: str, timeout: float = 5.0):
+    def __init__(self, lookup_url: str, backup_match: str, timeout: float = 5.0):
         self.lookup_url = lookup_url
-        self.primary_match = primary_match
         self.backup_match = backup_match
         self.timeout = timeout
         self.session = requests.Session()
@@ -208,7 +200,7 @@ class IspMatchDetector(LinkDetector):
         isp_string = " ".join(v for k in ("isp", "org", "as") if (v := str(data.get(k, "")).strip()))
         ip = str(data.get("query", "")).strip()
         detail = f"{ip} ({isp_string})" if ip and isp_string else (ip or isp_string)
-        return classify_isp(isp_string, self.primary_match, self.backup_match), detail
+        return classify_isp(isp_string, self.backup_match), detail
 
 
 class LinkStateTracker:
@@ -272,11 +264,10 @@ def build_link_detector(env: dict) -> LinkDetector:
     if kind != "public_ip":
         raise ValueError(f"unknown LINK_DETECTOR: {kind!r} (expected 'none' or 'public_ip')")
 
-    primary_match = env.get("PRIMARY_ISP_MATCH", "")
     backup_match = env.get("BACKUP_ISP_MATCH", "")
-    if primary_match or backup_match:
+    if backup_match:
         lookup_url = env.get("IP_LOOKUP_URL", "http://ip-api.com/json/?fields=isp,org,as,query")
-        return IspMatchDetector(lookup_url, primary_match, backup_match)
+        return IspMatchDetector(lookup_url, backup_match)
 
     lookup_host = env.get("DNS_LOOKUP_HOST", "myip.opendns.com")
     resolver = env.get("DNS_RESOLVER", "208.67.222.222")
