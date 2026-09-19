@@ -10,6 +10,12 @@ RUN useradd --no-create-home --uid 1000 bandwidtharr \
     && chown bandwidtharr:bandwidtharr /app/state
 USER bandwidtharr
 
+# Placed after the expensive layers above (base image, pip install, code
+# copy) so it changing on every commit doesn't bust their cache -- those
+# layers only actually change when their own inputs do.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \

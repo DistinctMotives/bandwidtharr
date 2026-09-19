@@ -1,4 +1,5 @@
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -6,6 +7,7 @@ from threading import Thread
 from bandwidtharr.state import SharedState
 
 INDEX_HTML = (Path(__file__).parent / "static" / "index.html").read_bytes()
+GIT_SHA = os.environ.get("GIT_SHA", "").strip()
 
 
 def _make_handler(state: SharedState):
@@ -18,6 +20,7 @@ def _make_handler(state: SharedState):
                 self._send(200, INDEX_HTML, "text/html; charset=utf-8")
             elif self.path == "/api/state":
                 snapshot = state.snapshot()
+                snapshot["commit"] = GIT_SHA
                 # Non-2xx whenever either app is currently unreachable, so
                 # the Dockerfile's HEALTHCHECK (which fails on HTTPError)
                 # reflects real health, not just "the web server is alive."

@@ -55,6 +55,14 @@
     margin: 0;
     letter-spacing: 0.01em;
   }
+  .commit-link {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--dim-2);
+    text-decoration: none;
+  }
+  .commit-link:hover { color: var(--dim); text-decoration: underline; }
 
   .link-status {
     display: none;
@@ -205,6 +213,7 @@
 <div class="wrap">
   <div class="masthead">
     <h1>bandwidtharr</h1>
+    <a class="commit-link" id="commit-link" href="#" style="display:none"></a>
   </div>
 
   <div class="link-status" id="link-status">
@@ -273,6 +282,7 @@ const linkLogCardEl = document.getElementById('link-log-card');
 const linkLogEl = document.getElementById('link-log');
 const canvas = document.getElementById('graph');
 const ctx = canvas.getContext('2d');
+const commitLinkEl = document.getElementById('commit-link');
 
 function bytesToMbps(b) { return (b * 8) / 1_000_000; }
 function fmt(mbps) { return mbps.toFixed(0) + ' Mbps'; }
@@ -443,6 +453,12 @@ async function poll() {
     updateLink(s.link_enabled, s.active_link, s.link_ok, s.link_error, total, s.last_link_check_at, s.next_link_check);
     updateLinkLog(s.link_events);
     drawGraph(s.history, s.total);
+
+    if (s.commit) {
+      commitLinkEl.href = 'https://github.com/DistinctMotives/bandwidtharr/commit/' + s.commit;
+      commitLinkEl.textContent = s.commit.slice(0, 7);
+      commitLinkEl.style.display = '';
+    }
   } catch (e) {
     totalLineEl.textContent = 'dashboard connection lost';
     [qbitStatusDotEl, sabStatusDotEl].forEach(el => {
