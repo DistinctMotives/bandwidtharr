@@ -162,7 +162,6 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 | `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before a switch actually happens | `2` |
-| `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used for the public-IP and ASN lookups | `myip.opendns.com` / `208.67.222.222` |
 
 ## Development
 
