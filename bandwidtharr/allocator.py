@@ -10,8 +10,11 @@ def allocate(
     min_floor: float,
     active_threshold: float,
     probe_step: float,
-) -> tuple[int, int]:
-    """Return (qbit_limit, sab_limit) in the same unit as the inputs (bytes/sec).
+) -> tuple[int, int, bool]:
+    """Return (qbit_limit, sab_limit, saturating) in the same unit as the
+    inputs (bytes/sec), where `saturating` is True when either app is
+    currently pinned at (>= 90% of) its own current limit while both are
+    active.
 
     - Whenever at most one app is active, both get the full budget as a ceiling --
       a lone downloader gets all of it, and an idle app stays uncapped so it can
@@ -24,15 +27,25 @@ def allocate(
     - "Demand" for an app pinned at its own limit is estimated as limit + probe_step
       rather than its measured speed, since a saturated app's measured speed just
       reflects the cap we gave it last round, not what it actually wants.
+    - `saturating` tells the caller this update reflects that genuine demand
+      growth, not measurement noise -- callers gating applied changes behind
+      a hysteresis/change-threshold should bypass it whenever `saturating` is
+      True. Skipping that would risk a deadlock: if a correction this small
+      never clears the threshold, `qbit_limit`/`sab_limit` never change, so
+      next cycle's inputs are identical and produce the identical
+      too-small correction again, forever.
     """
     qbit_active = qbit_speed > active_threshold
     sab_active = sab_speed > active_threshold
 
     if not (qbit_active and sab_active):
-        return round(total), round(total)
+        return round(total), round(total), False
 
-    qbit_demand = qbit_limit + probe_step if qbit_limit > 0 and qbit_speed >= qbit_limit * 0.9 else qbit_speed
-    sab_demand = sab_limit + probe_step if sab_limit > 0 and sab_speed >= sab_limit * 0.9 else sab_speed
+    qbit_saturating = qbit_limit > 0 and qbit_speed >= qbit_limit * 0.9
+    sab_saturating = sab_limit > 0 and sab_speed >= sab_limit * 0.9
+
+    qbit_demand = qbit_limit + probe_step if qbit_saturating else qbit_speed
+    sab_demand = sab_limit + probe_step if sab_saturating else sab_speed
 
     combined = qbit_demand + sab_demand
     qbit_share = qbit_demand / combined if combined > 0 else 0.5
@@ -47,4 +60,4 @@ def allocate(
         else:
             new_sab -= overflow
 
-    return round(new_qbit), round(new_sab)
+    return round(new_qbit), round(new_sab), qbit_saturating or sab_saturating

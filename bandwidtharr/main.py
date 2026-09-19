@@ -195,7 +195,7 @@ def main() -> None:
         # sides' real speed to mean anything, and there's nothing useful to
         # do with just one.
         if qbit_ok and sab_ok:
-            new_qbit_limit, new_sab_limit = allocate(
+            new_qbit_limit, new_sab_limit, saturating = allocate(
                 qbit_speed=qbit_speed,
                 sab_speed=sab_speed,
                 qbit_limit=qbit_limit,
@@ -210,7 +210,12 @@ def main() -> None:
             # threshold so a stale pre-existing limit (set manually, or from a
             # previous bandwidtharr run with different settings) doesn't linger
             # just because it happens to fall within the normal hysteresis band.
-            if first_cycle or link_changed or abs(new_qbit_limit - qbit_limit) >= effective_total * change_threshold:
+            # `saturating` also bypasses it -- otherwise a small demand-probing
+            # correction that never clears the threshold would never get
+            # applied, so qbit_limit/sab_limit would never change, so next
+            # cycle's inputs (and thus the computed correction) would be
+            # identical too -- a permanent deadlock, not just slow convergence.
+            if first_cycle or link_changed or saturating or abs(new_qbit_limit - qbit_limit) >= effective_total * change_threshold:
                 try:
                     qbit.set_download_limit(int(new_qbit_limit))
                     log.info(
@@ -223,7 +228,7 @@ def main() -> None:
                     qbit_error = str(e)
                     log.warning("failed to set qbit limit: %s", e)
 
-            if first_cycle or link_changed or abs(new_sab_limit - sab_limit) >= effective_total * change_threshold:
+            if first_cycle or link_changed or saturating or abs(new_sab_limit - sab_limit) >= effective_total * change_threshold:
                 try:
                     sab.set_download_limit(int(new_sab_limit))
                     log.info(

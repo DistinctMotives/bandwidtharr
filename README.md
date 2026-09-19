@@ -70,7 +70,7 @@ All configuration is via `.env` (see `.env.example`):
 | `MIN_FLOOR_MBPS`             | Minimum share either app can be squeezed to once both are active       | `40` |
 | `ACTIVE_THRESHOLD_MBPS`      | Speed above which an app counts as "active" rather than idle           | `2` |
 | `PROBE_STEP_MBPS`            | How much extra demand to assume for an app saturating its own cap      | `40` |
-| `CHANGE_THRESHOLD_FRACTION`  | Minimum relative change before a new limit is actually applied (hysteresis, avoids noisy API calls) | `0.05` |
+| `CHANGE_THRESHOLD_FRACTION`  | Minimum relative change before a new limit is actually applied (hysteresis, avoids noisy API calls) -- bypassed while either app is still actively climbing toward its fair share, so a small correction can't get stuck unapplied forever | `0.05` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
 | `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
 | `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |
