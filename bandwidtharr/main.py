@@ -238,9 +238,12 @@ def main() -> None:
         )
 
         log.debug(
-            "qbit speed=%.1fMbps limit=%.1fMbps ok=%s | sab speed=%.1fMbps limit=%.1fMbps ok=%s",
-            qbit_speed * 8 / 1_000_000, arbitrator.qbit_limit * 8 / 1_000_000, qbit_ok,
+            "qbit speed=%.1fMbps limit=%.1fMbps fair_share=%.1fMbps ok=%s | "
+            "sab speed=%.1fMbps limit=%.1fMbps ok=%s | overshoot_penalty=%.1fMbps",
+            qbit_speed * 8 / 1_000_000, arbitrator.qbit_limit * 8 / 1_000_000,
+            arbitrator.qbit_fair_share * 8 / 1_000_000, qbit_ok,
             sab_speed * 8 / 1_000_000, arbitrator.sab_limit * 8 / 1_000_000, sab_ok,
+            arbitrator.overshoot_compensator.penalty * 8 / 1_000_000,
         )
 
         time.sleep(poll_interval)
