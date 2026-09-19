@@ -135,12 +135,18 @@ query for the origin ASN, then a query for that ASN's registered name:
 ip=1.2.3.4; asn=$(dig +short TXT $(echo $ip | awk -F. '{print $4"."$3"."$2"."$1}').origin.asn.cymru.com | cut -d'|' -f1 | tr -d ' "'); dig +short TXT AS$asn.asn.cymru.com
 ```
 
+The last `|`-separated field of the output is the org name -- pull your
+match terms from there. For example, run against a real Starlink IP this
+prints `"14593 | US | arin | 2018-09-05 | SPACEX-STARLINK - Space
+Exploration Technologies Corporation, US"`, so the match terms would be
+`BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration` -- multiple
+comma-separated words pulled from that field, not the whole string
+verbatim, so a minor wording change (punctuation, a suffix like ", US")
+doesn't silently break the match.
+
 Once bandwidtharr is actually running, `docker logs` is the ground truth --
 setting `LOG_LEVEL=DEBUG` shows the detected string on *every* check,
-rather than only when a switch actually happens. List multiple
-comma-separated terms for robustness (e.g. `Starlink,SpaceX,Space
-Exploration`) rather than a single guess, so a change in one field's exact
-wording doesn't silently break the match.
+rather than only when a switch actually happens.
 
 Every confirmed switch (in both directions) is logged at `INFO`
 and shown live on the dashboard, which displays the current link state,
