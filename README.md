@@ -1,28 +1,33 @@
 # bandwidtharr
 
 > **Built with AI.** This entire project -- code, tests, CI, packaging -- was
-> written by Claude (Anthropic) working with a human directing and reviewing
-> it. It works for the author's own setup (binhex qBittorrent/SABnzbd on
-> Unraid), but hasn't seen wide use. Read the code, and use it at your own
-> risk -- do with it as you please.
+> written by an LLM working with a human directing and reviewing it. It
+> works for the author's own setup (binhex qBittorrent/SABnzbd on Unraid),
+> but hasn't seen wide use. Read the code, and use it at your own risk -- do
+> with it as you please.
 
-Dynamic bandwidth arbitration between qBittorrent and SABnzbd, so they share a
-fixed total budget instead of fighting each other for your connection.
+bandwidtharr stops qBittorrent and SABnzbd from fighting each other for your
+bandwidth. It watches both apps and gives each one the speed limit it
+actually needs, live, instead of you having to guess at fixed caps for each.
 
-If you run both a torrent client and a Usenet client, setting a static speed
-limit on each wastes bandwidth (only one running at a time still gets capped)
-and no limit at all means they contend for your whole pipe when both run
-together. bandwidtharr polls both apps every few seconds and adjusts their
-speed limits live:
-
-- If only one is downloading, it gets the **entire** budget.
-- If both are downloading at once, the budget is split **proportional to
-  demand** (not a flat 50/50) -- whichever app can actually use more
-  bandwidth gets more of it, and an app pinned at its own limit is treated as
-  still wanting more rather than assumed satisfied.
-
-It also ships a small live web dashboard (speed/limit per app, a usage graph
-against the budget line) served from inside the container.
+- **Dynamic, demand-based sharing** -- a lone downloader gets the whole
+  budget; once both are downloading, the budget splits by who can actually
+  use more (not a flat 50/50), and an app pinned at its own cap is still
+  treated as wanting more rather than assumed satisfied.
+- **WAN failover detection** *(optional)* -- notices when your router fails
+  over to a backup connection (Starlink, 5G, a hotspot...) and automatically
+  swaps in a lower budget for it, no router integration or specific vendor
+  required. Two detection modes (a private DNS-only check, or opt-in
+  ISP-name matching for more precision), with debounce against false
+  positives and state that survives restarts.
+- **Optional qBittorrent upload cap** -- a separate static upload limit, with
+  its own lower value to use while on the backup link.
+- **Live dashboard** -- current speed/limit per app, a usage graph against
+  the budget line, current link status, and a rolling log of past
+  failover/recovery events.
+- **Low-maintenance to run** -- one small Docker container, no root user
+  inside it, a healthcheck that reflects real app connectivity (not just
+  "the web server is up"), and automatic security-patch updates via CI.
 
 ## Requirements
 
