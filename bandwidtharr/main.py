@@ -3,7 +3,7 @@ import os
 import time
 
 from bandwidtharr import webserver
-from bandwidtharr.allocator import allocate
+from bandwidtharr.allocator import MIN_SHARE_FRACTION, OvershootCompensator, allocate
 from bandwidtharr.link_detector import BACKUP, LinkStateTracker, build_link_detector, next_link_check_decision
 from bandwidtharr.qbittorrent import QBittorrentClient
 from bandwidtharr.sabnzbd import SabnzbdClient
@@ -36,10 +36,8 @@ def should_log_repeated_failure(count: int) -> bool:
 def main() -> None:
     total = mbps_to_bytes(float(os.environ.get("TOTAL_LIMIT_MBPS", "800")))
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "3"))
-    min_floor = mbps_to_bytes(float(os.environ.get("MIN_FLOOR_MBPS", "40")))
     active_threshold = mbps_to_bytes(float(os.environ.get("ACTIVE_THRESHOLD_MBPS", "2")))
-    probe_step = mbps_to_bytes(float(os.environ.get("PROBE_STEP_MBPS", "40")))
-    change_threshold = float(os.environ.get("CHANGE_THRESHOLD_FRACTION", "0.05"))
+    reallocation_settle_seconds = float(os.environ.get("REALLOCATION_SETTLE_SECONDS", "30"))
 
     link_detector_kind = os.environ.get("LINK_DETECTOR", "none").strip().lower()
     link_enabled = link_detector_kind not in ("", "none")
@@ -61,6 +59,8 @@ def main() -> None:
     link_confirm_count = int(os.environ.get("LINK_FAILOVER_CONFIRM_COUNT", "2"))
     link_detector = build_link_detector(os.environ)
     link_tracker = LinkStateTracker(confirm_count=link_confirm_count)
+    overshoot_compensator = OvershootCompensator()
+    last_reallocation_at = 0.0
     next_link_check = 0.0
     link_ok = True
     link_error = None
@@ -91,8 +91,8 @@ def main() -> None:
     sab_limit = total
 
     log.info(
-        "starting: total=%.0fMbps floor=%.0fMbps poll=%ss web_port=%s link_detector=%s%s%s",
-        total * 8 / 1_000_000, min_floor * 8 / 1_000_000, poll_interval, web_port,
+        "starting: total=%.0fMbps poll=%ss web_port=%s link_detector=%s%s%s",
+        total * 8 / 1_000_000, poll_interval, web_port,
         link_detector_kind,
         f" backup_total={backup_total * 8 / 1_000_000:.0f}Mbps" if backup_total else "",
         f" qbit_upload_limit={qbit_upload_limit * 8 / 1_000_000:.0f}Mbps" if qbit_upload_limit else "",
@@ -201,26 +201,40 @@ def main() -> None:
                 qbit_limit=qbit_limit,
                 sab_limit=sab_limit,
                 total=effective_total,
-                min_floor=min_floor,
                 active_threshold=active_threshold,
-                probe_step=probe_step,
             )
 
-            # On the first successful cycle, force-apply regardless of the change
-            # threshold so a stale pre-existing limit (set manually, or from a
-            # previous bandwidtharr run with different settings) doesn't linger
-            # just because it happens to fall within the normal hysteresis band.
-            # `saturating` also bypasses it -- otherwise a small demand-probing
-            # correction that never clears the threshold would never get
-            # applied, so qbit_limit/sab_limit would never change, so next
-            # cycle's inputs (and thus the computed correction) would be
-            # identical too -- a permanent deadlock, not just slow convergence.
-            if first_cycle or link_changed or saturating or abs(new_qbit_limit - qbit_limit) >= effective_total * change_threshold:
+            # Don't act on every single fairness-driven nudge the instant
+            # it's computed -- give qBittorrent/SABnzbd time to actually
+            # settle into a newly-assigned share before judging them again,
+            # rather than re-adjusting every poll cycle. first_cycle and a
+            # WAN failover budget swap still apply immediately, since those
+            # are discrete, urgent events, not gradual fairness-tuning.
+            fairness_allowed = (
+                first_cycle or link_changed
+                or now - last_reallocation_at >= reallocation_settle_seconds
+            )
+            fairness_changed = new_qbit_limit != qbit_limit or new_sab_limit != sab_limit
+
+            # qBittorrent's own rate limiter doesn't enforce its assigned cap
+            # byte-precisely (UDP-heavy torrent traffic is inherently harder
+            # to throttle exactly than SABnzbd's usenet transfers) -- if
+            # actual combined speed keeps exceeding budget despite the split
+            # above, squeeze qbit's limit further to compensate. This always
+            # applies immediately, never gated by the settle timer above --
+            # staying under budget matters more than how quickly unused
+            # headroom gets reclaimed and handed to the other app.
+            overshoot_penalty = overshoot_compensator.update(combined_speed, effective_total)
+            if overshoot_penalty > 0:
+                new_qbit_limit = max(effective_total * MIN_SHARE_FRACTION, new_qbit_limit - overshoot_penalty)
+
+            if overshoot_penalty > 0 or (fairness_allowed and new_qbit_limit != qbit_limit):
                 try:
                     qbit.set_download_limit(int(new_qbit_limit))
                     log.info(
-                        "qbit limit %.0f -> %.0f Mbps",
+                        "qbit limit %.0f -> %.0f Mbps%s",
                         qbit_limit * 8 / 1_000_000, new_qbit_limit * 8 / 1_000_000,
+                        f" (overshoot -{overshoot_penalty * 8 / 1_000_000:.0f}Mbps)" if overshoot_penalty > 0 else "",
                     )
                     qbit_limit = new_qbit_limit
                 except Exception as e:
@@ -228,7 +242,7 @@ def main() -> None:
                     qbit_error = str(e)
                     log.warning("failed to set qbit limit: %s", e)
 
-            if first_cycle or link_changed or saturating or abs(new_sab_limit - sab_limit) >= effective_total * change_threshold:
+            if fairness_allowed and new_sab_limit != sab_limit:
                 try:
                     sab.set_download_limit(int(new_sab_limit))
                     log.info(
@@ -240,6 +254,9 @@ def main() -> None:
                     sab_ok = False
                     sab_error = str(e)
                     log.warning("failed to set sab limit: %s", e)
+
+            if fairness_changed and fairness_allowed:
+                last_reallocation_at = now
 
             first_cycle = False
 

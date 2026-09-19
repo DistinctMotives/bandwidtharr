@@ -13,7 +13,11 @@ actually needs, live, instead of you having to guess at fixed caps for each.
 - **Dynamic, demand-based sharing** -- a lone downloader gets the whole
   budget; once both are downloading, the budget splits by who can actually
   use more (not a flat 50/50), and an app pinned at its own cap is still
-  treated as wanting more rather than assumed satisfied.
+  treated as wanting more rather than assumed satisfied. Also compensates
+  automatically if qBittorrent's real throughput keeps exceeding its
+  assigned limit (common with UDP-heavy torrent traffic that's hard to
+  rate-limit precisely), squeezing it further until combined usage comes
+  back within budget.
 - **WAN failover detection** *(optional)* -- notices when your router fails
   over to a backup connection (Starlink, 5G, a hotspot...) and automatically
   swaps in a lower budget for it, no router integration or vendor-specific
@@ -67,10 +71,8 @@ All configuration is via `.env` (see `.env.example`):
 | `SAB_API_KEY`                | SABnzbd API key                                                        | *(required)* |
 | `TOTAL_LIMIT_MBPS`           | Combined download budget to enforce                                    | `800` |
 | `POLL_INTERVAL_SECONDS`      | How often to poll and re-evaluate                                      | `3` |
-| `MIN_FLOOR_MBPS`             | Minimum share either app can be squeezed to once both are active       | `40` |
 | `ACTIVE_THRESHOLD_MBPS`      | Speed above which an app counts as "active" rather than idle           | `2` |
-| `PROBE_STEP_MBPS`            | How much extra demand to assume for an app saturating its own cap      | `40` |
-| `CHANGE_THRESHOLD_FRACTION`  | Minimum relative change before a new limit is actually applied (hysteresis, avoids noisy API calls) -- bypassed while either app is still actively climbing toward its fair share, so a small correction can't get stuck unapplied forever | `0.05` |
+| `REALLOCATION_SETTLE_SECONDS` | Minimum time between fairness-driven reallocation adjustments, letting qBittorrent/SABnzbd settle into a newly-assigned share before being judged again. Doesn't affect how quickly actual usage is brought back under budget if it overshoots -- only how quickly unused headroom gets reclaimed from one app and handed to the other | `30` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
 | `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
 | `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |
