@@ -10,10 +10,11 @@ bandwidtharr stops qBittorrent and SABnzbd from fighting each other for your
 bandwidth. It watches both apps and gives each one the speed limit it
 actually needs, live, instead of you having to guess at fixed caps for each.
 
-- **Dynamic, demand-based sharing** -- a lone downloader gets the whole
-  budget; once both are downloading, the budget splits by who can actually
-  use more (not a flat 50/50), and an app pinned at its own cap is still
-  treated as wanting more rather than assumed satisfied. Also compensates
+- **Fair, demand-aware sharing** -- a lone downloader gets the whole
+  budget; once both are downloading, they start at an even split, and
+  share only moves from one to the other once it's demonstrably not using
+  what it already has -- not a fixed ratio, and not permanently penalizing
+  an app for a past lull once its demand picks back up. Also compensates
   automatically if qBittorrent's real throughput keeps exceeding its
   assigned limit (common with UDP-heavy torrent traffic that's hard to
   rate-limit precisely), squeezing it further until combined usage comes
@@ -184,9 +185,12 @@ Pushes to `main` run the test suite first, then rebuild and publish
 (`.github/workflows/docker-publish.yml`) -- the image is only built and
 pushed if `pytest tests/` passes.
 
-The allocation logic (`bandwidtharr/allocator.py`) is a pure function with no
-I/O, so it's fully covered by fast unit tests independent of the qBittorrent
-and SABnzbd API clients.
+The allocation logic (`bandwidtharr/allocator.py`) has no I/O, so it's fully
+covered by fast unit tests independent of the qBittorrent and SABnzbd API
+clients -- including `tests/test_simulation.py`, which drives it through
+realistic, fluctuating multi-cycle scenarios (ramp-up lag, imprecise rate
+limiting, random jitter, WAN failover) rather than idealized instant
+convergence.
 
 ## License
 
