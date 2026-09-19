@@ -16,9 +16,8 @@ actually needs, live, instead of you having to guess at fixed caps for each.
   treated as wanting more rather than assumed satisfied.
 - **WAN failover detection** *(optional)* -- notices when your router fails
   over to a backup connection (Starlink, 5G, a hotspot...) and automatically
-  swaps in a lower budget for it, no router integration or specific vendor
-  required. Two detection modes (a private DNS-only check, or opt-in
-  ISP-name matching for more precision), with debounce against false
+  swaps in a lower budget for it, no router integration or vendor-specific
+  setup required. DNS-based ISP matching, with debounce against false
   positives and state that survives restarts.
 - **Optional qBittorrent upload cap** -- a separate static upload limit, with
   its own lower value to use while on the backup link.
@@ -76,13 +75,9 @@ All configuration is via `.env` (see `.env.example`):
 | `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
 | `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |
 | `LINK_DETECTOR`               | `none` or `public_ip` -- see [WAN failover detection](#wan-failover-detection)    | `none` |
-| `BACKUP_TOTAL_LIMIT_MBPS`     | Budget to use while on the backup link (required if `LINK_DETECTOR` is set)  | *(none)* |
-| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` | `30` |
-| `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
-| `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
-| `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
-| `BACKUP_ISP_MATCH`            | ISP/org/AS-name substrings (comma-separated) identifying the backup link (required if `LINK_DETECTOR` is set) | *(none)* |
-| `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used for the "what's my public IP" and ISP/ASN lookups | `myip.opendns.com` / `208.67.222.222` |
+
+The rest of the WAN-failover variables (`BACKUP_TOTAL_LIMIT_MBPS`,
+`BACKUP_ISP_MATCH`, and tuning knobs) are covered in that section.
 
 ## Web dashboard
 
@@ -158,6 +153,16 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
   of failover/recovery events, persisted to the `bandwidtharr_state`
   volume so it survives restarts. The detected IP/ISP itself is never sent
   to the browser -- only ever logged server-side (`docker logs`).
+
+### Tuning (optional, defaults shown)
+
+| Variable                      | Meaning | Default |
+|--------------------------------|---------|---------|
+| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` | `30` |
+| `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
+| `LINK_CHECK_MIN_SPEED_MBPS`   | Speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
+| `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before a switch actually happens | `2` |
+| `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used for the public-IP and ASN lookups | `myip.opendns.com` / `208.67.222.222` |
 
 ## Development
 
