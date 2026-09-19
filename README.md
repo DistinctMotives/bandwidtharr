@@ -148,9 +148,10 @@ To run against your local changes instead of the published image:
 docker compose up -d --build
 ```
 
-Pushes to `main` automatically rebuild and publish
+Pushes to `main` run the test suite first, then rebuild and publish
 `ghcr.io/distinctmotives/bandwidtharr:latest` via GitHub Actions
-(`.github/workflows/docker-publish.yml`).
+(`.github/workflows/docker-publish.yml`) -- the image is only built and
+pushed if `pytest tests/` passes.
 
 The allocation logic (`bandwidtharr/allocator.py`) is a pure function with no
 I/O, so it's fully covered by fast unit tests independent of the qBittorrent

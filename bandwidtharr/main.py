@@ -4,7 +4,7 @@ import time
 
 from bandwidtharr import webserver
 from bandwidtharr.allocator import allocate
-from bandwidtharr.link_detector import BACKUP, LinkStateTracker, build_link_detector
+from bandwidtharr.link_detector import BACKUP, LinkStateTracker, build_link_detector, next_link_check_decision
 from bandwidtharr.qbittorrent import QBittorrentClient
 from bandwidtharr.sabnzbd import SabnzbdClient
 from bandwidtharr.state import SharedState
@@ -24,6 +24,13 @@ def optional_mbps_env(name: str) -> float | None:
     bytes/sec. Distinguishes "not configured" from an explicit 0."""
     raw = os.environ.get(name, "").strip()
     return mbps_to_bytes(float(raw)) if raw else None
+
+
+def should_log_repeated_failure(count: int) -> bool:
+    """Log the 1st occurrence, then every 20th (~once/min at the default 3s
+    poll interval) -- avoids a warning every single poll cycle for the
+    duration of a sustained outage."""
+    return count == 1 or count % 20 == 0
 
 
 def main() -> None:
@@ -58,6 +65,10 @@ def main() -> None:
     link_ok = True
     link_error = None
     last_link_check_at = None
+    qbit_fail_count = 0
+    sab_fail_count = 0
+    link_fail_count = 0
+    qbit_upload_fail_count = 0
 
     qbit = QBittorrentClient(
         base_url=os.environ["QBIT_URL"],
@@ -97,31 +108,35 @@ def main() -> None:
 
         try:
             qbit_speed = qbit.get_download_speed()
+            qbit_fail_count = 0
         except Exception as e:
             qbit_ok = False
             qbit_error = str(e)
-            log.warning("qbit unreachable: %s", e)
+            qbit_fail_count += 1
+            if should_log_repeated_failure(qbit_fail_count):
+                log.warning("qbit unreachable (%dx): %s", qbit_fail_count, e)
 
         try:
             sab_speed = sab.get_download_speed()
+            sab_fail_count = 0
         except Exception as e:
             sab_ok = False
             sab_error = str(e)
-            log.warning("sab unreachable: %s", e)
+            sab_fail_count += 1
+            if should_log_repeated_failure(sab_fail_count):
+                log.warning("sab unreachable (%dx): %s", sab_fail_count, e)
 
         now = time.time()
         combined_speed = qbit_speed + sab_speed
         is_active = combined_speed >= link_check_min_speed
-        # A check made while idle schedules the next one on the coarser idle
-        # cadence, which can be minutes out. If downloads resume partway
-        # through that wait, don't sit on the stale schedule -- check now
-        # rather than waiting up to LINK_CHECK_IDLE_INTERVAL_SECONDS for a
-        # budget that may already be wrong for the active link.
-        check_due = now >= next_link_check or (is_active and next_link_check - now > link_check_interval)
+        check_due, link_check_interval_to_use = next_link_check_decision(
+            now, next_link_check, is_active, link_check_interval, link_check_idle_interval,
+        )
         if check_due:
             last_link_check_at = now
             try:
                 reading, _detail = link_detector.check()
+                link_fail_count = 0
                 previous_link = link_tracker.confirmed
                 confirmed_link = link_tracker.observe(reading)
                 link_ok = True
@@ -139,13 +154,10 @@ def main() -> None:
             except Exception as e:
                 link_ok = False
                 link_error = str(e)
-                log.warning("link detector check failed: %s", e)
-            # Idle traffic falls back to a coarser cadence so bandwidtharr
-            # isn't making DNS/HTTP calls purely to watch nothing happen, but
-            # status still refreshes on its own rather than going stale
-            # indefinitely -- see LINK_CHECK_IDLE_INTERVAL_SECONDS.
-            interval = link_check_interval if is_active else link_check_idle_interval
-            next_link_check = now + interval
+                link_fail_count += 1
+                if should_log_repeated_failure(link_fail_count):
+                    log.warning("link detector check failed (%dx): %s", link_fail_count, e)
+            next_link_check = now + link_check_interval_to_use
 
         effective_total = backup_total if link_tracker.confirmed == BACKUP else total
 
@@ -162,10 +174,21 @@ def main() -> None:
             if effective_upload_limit != last_applied_upload_limit:
                 try:
                     qbit.set_upload_limit(int(effective_upload_limit))
-                    log.info("qbit upload limit -> %.0f Mbps", effective_upload_limit * 8 / 1_000_000)
+                    prev_str = (
+                        f"{last_applied_upload_limit * 8 / 1_000_000:.0f}"
+                        if last_applied_upload_limit is not None
+                        else "unset"
+                    )
+                    log.info(
+                        "qbit upload limit %s -> %.0f Mbps",
+                        prev_str, effective_upload_limit * 8 / 1_000_000,
+                    )
                     last_applied_upload_limit = effective_upload_limit
+                    qbit_upload_fail_count = 0
                 except Exception as e:
-                    log.warning("failed to set qbit upload limit: %s", e)
+                    qbit_upload_fail_count += 1
+                    if should_log_repeated_failure(qbit_upload_fail_count):
+                        log.warning("failed to set qbit upload limit (%dx): %s", qbit_upload_fail_count, e)
 
         # Only arbitrate once both are reachable -- allocate() needs both
         # sides' real speed to mean anything, and there's nothing useful to

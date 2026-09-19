@@ -31,11 +31,6 @@ class SabnzbdClient:
         data = self._call({"mode": "queue"})
         return float(data["queue"]["kbpersec"]) * 1024
 
-    def get_download_limit(self) -> float:
-        """Current enforced limit in bytes/sec, or 0 if unlimited."""
-        data = self._call({"mode": "queue"})
-        return float(data["queue"].get("speedlimit_abs") or 0)
-
     def set_download_limit(self, limit_bytes_per_sec: int) -> None:
         # A value that lands in 1-100 would be misread as a percentage instead
         # of an absolute speed, so nudge it just outside that band -- 101

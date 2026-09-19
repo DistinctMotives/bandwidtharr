@@ -206,6 +206,28 @@ class LinkStateTracker:
         return self.confirmed
 
 
+def next_link_check_decision(
+    now: float,
+    next_link_check: float,
+    is_active: bool,
+    active_interval: float,
+    idle_interval: float,
+) -> tuple[bool, float]:
+    """Return (check_due, interval_if_checked): whether a link check should
+    run this cycle, and the cadence to schedule the next one on if it does
+    (the caller only uses the interval when check_due is True).
+
+    A check made while idle schedules the next one on the coarser idle
+    cadence, which can be minutes out. If downloads resume partway through
+    that wait, don't sit on the stale schedule -- due immediately whenever
+    active and the existing schedule is further out than the active cadence
+    would ever wait, not just once the schedule time is actually reached.
+    """
+    check_due = now >= next_link_check or (is_active and next_link_check - now > active_interval)
+    interval = active_interval if is_active else idle_interval
+    return check_due, interval
+
+
 def build_link_detector(env: dict) -> LinkDetector:
     kind = env.get("LINK_DETECTOR", "none").strip().lower()
     if kind in ("", "none"):

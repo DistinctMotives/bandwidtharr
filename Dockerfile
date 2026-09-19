@@ -5,6 +5,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY bandwidtharr/ ./bandwidtharr/
 
+RUN useradd --no-create-home --uid 1000 bandwidtharr
+USER bandwidtharr
+
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

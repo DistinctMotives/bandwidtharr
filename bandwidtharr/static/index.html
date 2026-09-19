@@ -301,7 +301,7 @@ function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps, lastC
   }
 
   const nowSec = Date.now() / 1000;
-  const parts = [downloading ? 'currently downloading' : 'currently idle'];
+  const parts = [downloading ? 'active' : 'idle'];
   if (lastCheckAt) parts.push('checked ' + fmtRelative(nowSec - lastCheckAt) + ' ago');
   if (nextCheckAt) parts.push('next in ' + fmtRelative(nextCheckAt - nowSec));
   linkStatusDetailEl.textContent = parts.join(' · ');

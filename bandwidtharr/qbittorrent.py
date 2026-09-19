@@ -37,11 +37,6 @@ class QBittorrentClient:
         info = self._request("GET", "/api/v2/transfer/info").json()
         return float(info["dl_info_speed"])
 
-    def get_download_limit(self) -> float:
-        """Current configured limit in bytes/sec, or 0 if unlimited."""
-        info = self._request("GET", "/api/v2/transfer/info").json()
-        return float(info["dl_rate_limit"])
-
     def set_download_limit(self, limit_bytes_per_sec: int) -> None:
         self._request(
             "POST",

@@ -2,6 +2,8 @@ import threading
 import time
 from collections import deque
 
+from bandwidtharr.link_detector import PRIMARY
+
 
 class SharedState:
     """Thread-safe snapshot of the latest poll cycle, read by the web server
@@ -19,7 +21,7 @@ class SharedState:
         self._qbit_error: str | None = None
         self._sab_error: str | None = None
         self._link_enabled = False
-        self._active_link = "primary"
+        self._active_link = PRIMARY
         self._link_ok = True
         self._link_error: str | None = None
         self._last_link_check_at: float | None = None
@@ -40,7 +42,7 @@ class SharedState:
         qbit_error: str | None = None,
         sab_error: str | None = None,
         link_enabled: bool = False,
-        active_link: str = "primary",
+        active_link: str = PRIMARY,
         link_ok: bool = True,
         link_error: str | None = None,
         last_link_check_at: float | None = None,

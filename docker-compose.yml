@@ -4,6 +4,8 @@ services:
     build: .
     container_name: bandwidtharr
     restart: unless-stopped
+    cap_add:
+      - NET_BIND_SERVICE  # lets the non-root container user still bind WEB_PORT=80
     networks:
       - bandwidtharr_net
     env_file:
