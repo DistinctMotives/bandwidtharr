@@ -216,14 +216,11 @@ def main() -> None:
             )
             fairness_changed = new_qbit_limit != qbit_limit or new_sab_limit != sab_limit
 
-            # qBittorrent's own rate limiter doesn't enforce its assigned cap
-            # byte-precisely (UDP-heavy torrent traffic is inherently harder
-            # to throttle exactly than SABnzbd's usenet transfers) -- if
-            # actual combined speed keeps exceeding budget despite the split
-            # above, squeeze qbit's limit further to compensate. This always
-            # applies immediately, never gated by the settle timer above --
-            # staying under budget matters more than how quickly unused
-            # headroom gets reclaimed and handed to the other app.
+            # See OvershootCompensator's docstring for why qBittorrent
+            # specifically needs this. Always applies immediately, never
+            # gated by the settle timer above -- staying under budget
+            # matters more than how quickly unused headroom gets reclaimed
+            # and handed to the other app.
             overshoot_penalty = overshoot_compensator.update(combined_speed, effective_total)
             if overshoot_penalty > 0:
                 new_qbit_limit = max(effective_total * MIN_SHARE_FRACTION, new_qbit_limit - overshoot_penalty)

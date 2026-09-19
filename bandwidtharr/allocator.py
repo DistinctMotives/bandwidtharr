@@ -89,13 +89,18 @@ def allocate(
     sab_slack = sab_limit > 0 and sab_speed < sab_limit * 0.85
 
     headroom = total * MIN_SHARE_FRACTION
+
+    def _shrunk(limit: float, speed: float) -> float:
+        """The slack app's new share: its demonstrated speed plus headroom
+        to grow back later, never more than what it already has."""
+        return min(limit, speed + headroom)
+
     new_qbit = qbit_limit
 
     if qbit_slack and sab_hungry:
-        new_qbit = min(qbit_limit, qbit_speed + headroom)
+        new_qbit = _shrunk(qbit_limit, qbit_speed)
     elif sab_slack and qbit_hungry:
-        new_sab_target = min(sab_limit, sab_speed + headroom)
-        new_qbit = total - new_sab_target
+        new_qbit = total - _shrunk(sab_limit, sab_speed)
     elif qbit_hungry and sab_hungry:
         step = total * 0.05
         midpoint = (qbit_limit + sab_limit) / 2
