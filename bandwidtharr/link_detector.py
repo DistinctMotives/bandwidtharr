@@ -3,10 +3,10 @@ failed over from a wired connection to Starlink or 5G), so main.py can swap
 in a lower total budget while on backup.
 
 Kept vendor-agnostic and pluggable: `LinkDetector` is the interface a future
-vendor-specific detector (FortiGate SD-WAN, pfSense, UniFi, ...) would also
-implement, without any changes to main.py's loop or allocator.py. v1 ships
-one implementation, `DnsBaselineDetector`/`IspMatchDetector`, selected by
-`build_link_detector()` based on config.
+vendor-specific detector would also implement, without any changes to
+main.py's loop or allocator.py. v1 ships one implementation,
+`DnsBaselineDetector`/`IspMatchDetector`, selected by `build_link_detector()`
+based on config.
 
 Same conventions as qbittorrent.py/sabnzbd.py: raise on any check failure,
 never guess -- the caller decides what "unknown" means.

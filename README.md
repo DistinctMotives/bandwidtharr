@@ -100,9 +100,9 @@ If your router fails over to a backup link (Starlink, 5G, a cellular
 hotspot...) the fixed `TOTAL_LIMIT_MBPS` budget is usually way too high for
 that link, so bandwidtharr can optionally detect the failover and swap in a
 separate `BACKUP_TOTAL_LIMIT_MBPS` while it's active. This works with any
-router -- it doesn't assume a FortiGate or any other vendor -- since it
-detects the failover from the outside, by noticing that your public egress
-path changed, not by talking to your router.
+router, regardless of vendor, since it detects the failover from the outside,
+by noticing that your public egress path changed, not by talking to your
+router.
 
 Off by default. Set `LINK_DETECTOR=public_ip` and `BACKUP_TOTAL_LIMIT_MBPS`
 to turn it on; set `LINK_DETECTOR` back to `none` (or remove it) to turn it
