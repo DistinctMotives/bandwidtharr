@@ -4,7 +4,6 @@ from bandwidtharr.link_detector import (
     BACKUP,
     PRIMARY,
     AsnMatchDetector,
-    IspMatchDetector,
     LinkStateTracker,
     NullDetector,
     build_link_detector,
@@ -124,10 +123,3 @@ def test_build_link_detector_defaults_to_asn_match():
     assert isinstance(detector, AsnMatchDetector)
 
 
-def test_build_link_detector_ip_lookup_url_opts_into_http():
-    detector = build_link_detector({
-        "LINK_DETECTOR": "public_ip",
-        "BACKUP_ISP_MATCH": "Starlink",
-        "IP_LOOKUP_URL": "http://example.com/lookup",
-    })
-    assert isinstance(detector, IspMatchDetector)

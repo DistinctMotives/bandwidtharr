@@ -82,7 +82,6 @@ All configuration is via `.env` (see `.env.example`):
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
 | `BACKUP_ISP_MATCH`            | ISP/org/AS-name substrings (comma-separated) identifying the backup link (required if `LINK_DETECTOR` is set) | *(none)* |
-| `IP_LOOKUP_URL`               | Set to opt into an HTTP-based ISP lookup instead of the default DNS-only one | *(unset, DNS-only)* |
 | `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used for the "what's my public IP" and ISP/ASN lookups | `myip.opendns.com` / `208.67.222.222` |
 
 ## Web dashboard
@@ -123,27 +122,27 @@ rotating its own dynamic IP. If the lookup ever returns something
 unrecognized (a hiccup, an outage), it fails toward primary -- i.e. toward
 *not* throttling -- rather than toward backup.
 
-Don't guess the match value -- query
-`http://ip-api.com/json/<your-backup-link-IP>?fields=isp,org,as` to see
-what's actually returned. The carrier name isn't always in the `isp`
-field: for Starlink, `isp` is SpaceX's corporate name and "Starlink" only
-shows up in `org`. List multiple comma-separated terms for robustness
-(e.g. `Starlink,SpaceX,Space Exploration`) rather than a single guess, so a
-change in one field's exact wording doesn't silently break the match.
+The lookup itself is three plain DNS queries against [Team Cymru's free
+public IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) (one
+to learn your current public IP, two more for the ASN/org name behind it)
+-- no third-party HTTP call at all.
 
-Two lookup mechanisms, chosen by whether you've set `IP_LOOKUP_URL`:
+Don't guess the match value -- query it directly for any IP (yours, or a
+link you're not currently on) the same way bandwidtharr does -- reverse-IP
+query for the origin ASN, then a query for that ASN's registered name:
 
-- **Default:** two DNS queries against [Team Cymru's free public
-  IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) (plus one
-  more to learn your current public IP, the same DNS trick used before) --
-  no third-party HTTP call at all, just ordinary DNS.
-- **Opt-in HTTP:** set `IP_LOOKUP_URL` (default when set:
-  `http://ip-api.com/json/?fields=isp,org,as,query`) and bandwidtharr calls
-  that instead -- useful if Team Cymru's service is ever unavailable, or
-  you want a specific HTTP provider. Sends your public IP to that
-  third-party API on every check.
+```sh
+ip=1.2.3.4; asn=$(dig +short TXT $(echo $ip | awk -F. '{print $4"."$3"."$2"."$1}').origin.asn.cymru.com | cut -d'|' -f1 | tr -d ' "'); dig +short TXT AS$asn.asn.cymru.com
+```
 
-Either way, every confirmed switch (in both directions) is logged at `INFO`
+Once bandwidtharr is actually running, `docker logs` is the ground truth --
+setting `LOG_LEVEL=DEBUG` shows the detected string on *every* check,
+rather than only when a switch actually happens. List multiple
+comma-separated terms for robustness (e.g. `Starlink,SpaceX,Space
+Exploration`) rather than a single guess, so a change in one field's exact
+wording doesn't silently break the match.
+
+Every confirmed switch (in both directions) is logged at `INFO`
 and shown live on the dashboard, which displays the current link state,
 whether it's currently treating traffic as downloading or idle, when it was
 last/next checked, and a rolling log (last 50 events) of recent

@@ -4,10 +4,11 @@ in a lower total budget while on backup.
 
 Kept vendor-agnostic and pluggable: `LinkDetector` is the interface a future
 vendor-specific detector would also implement, without any changes to
-main.py's loop or allocator.py. Ships two implementations, selected by
-`build_link_detector()`: `AsnMatchDetector` (default, DNS-only) and
-`IspMatchDetector` (opt-in, HTTP-based -- set IP_LOOKUP_URL to use it).
-BACKUP_ISP_MATCH is required whenever LINK_DETECTOR=public_ip is set.
+main.py's loop or allocator.py. `build_link_detector()` selects
+`AsnMatchDetector`, which classifies the ASN/org behind the current public
+IP via plain DNS queries against Team Cymru's free public IP-to-ASN
+service -- no third-party HTTP call. BACKUP_ISP_MATCH is required whenever
+LINK_DETECTOR=public_ip is set.
 
 Same conventions as qbittorrent.py/sabnzbd.py: raise on any check failure,
 never guess -- the caller decides what "unknown" means.
@@ -18,8 +19,6 @@ import random
 import socket
 import struct
 import time
-
-import requests
 
 log = logging.getLogger("bandwidtharr.link_detector")
 
@@ -192,29 +191,6 @@ class AsnMatchDetector(LinkDetector):
         return classify_isp(self._cached_org_name, self.backup_match), _format_detail(ip, self._cached_org_name)
 
 
-class IspMatchDetector(LinkDetector):
-    """Opt-in alternative to the default AsnMatchDetector: calls a
-    configurable IP-info HTTP endpoint and classifies the returned ISP/org
-    name against a configured backup substring. Sends the router's public
-    IP to that third-party HTTP service on every check -- only used when
-    the user explicitly sets IP_LOOKUP_URL (e.g. if Team Cymru's DNS
-    service is ever unavailable, or a specific HTTP provider is wanted)."""
-
-    def __init__(self, lookup_url: str, backup_match: str, timeout: float = 5.0):
-        self.lookup_url = lookup_url
-        self.backup_match = backup_match
-        self.timeout = timeout
-        self.session = requests.Session()
-
-    def check(self) -> tuple[str, str]:
-        resp = self.session.get(self.lookup_url, timeout=self.timeout)
-        resp.raise_for_status()
-        data = resp.json()
-        isp_string = " ".join(v for k in ("isp", "org", "as") if (v := str(data.get(k, "")).strip()))
-        ip = str(data.get("query", "")).strip()
-        return classify_isp(isp_string, self.backup_match), _format_detail(ip, isp_string)
-
-
 class LinkStateTracker:
     """Turns raw per-check readings into a confirmed state, requiring
     `confirm_count` consecutive matching readings before actually flipping --
@@ -279,10 +255,6 @@ def build_link_detector(env: dict) -> LinkDetector:
     backup_match = env.get("BACKUP_ISP_MATCH", "").strip()
     if not backup_match:
         raise ValueError("BACKUP_ISP_MATCH must be set when LINK_DETECTOR=public_ip")
-
-    lookup_url = env.get("IP_LOOKUP_URL", "").strip()
-    if lookup_url:
-        return IspMatchDetector(lookup_url, backup_match)
 
     lookup_host = env.get("DNS_LOOKUP_HOST", "myip.opendns.com")
     resolver = env.get("DNS_RESOLVER", "208.67.222.222")

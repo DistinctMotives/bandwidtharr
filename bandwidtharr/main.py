@@ -135,8 +135,9 @@ def main() -> None:
         if check_due:
             last_link_check_at = now
             try:
-                reading, _detail = link_detector.check()
+                reading, detail = link_detector.check()
                 link_fail_count = 0
+                log.debug("link check: %s (%s)", reading, detail)
                 previous_link = link_tracker.confirmed
                 confirmed_link = link_tracker.observe(reading)
                 link_ok = True
@@ -146,9 +147,9 @@ def main() -> None:
                     old_total_mbps = (backup_total if previous_link == BACKUP else total) * 8 / 1_000_000
                     new_total_mbps = (backup_total if confirmed_link == BACKUP else total) * 8 / 1_000_000
                     log.info(
-                        "link %s: %s -> %s (budget %.0f -> %.0f Mbps)",
+                        "link %s: %s -> %s (budget %.0f -> %.0f Mbps) [%s]",
                         "failed over" if confirmed_link == BACKUP else "recovered",
-                        previous_link, confirmed_link, old_total_mbps, new_total_mbps,
+                        previous_link, confirmed_link, old_total_mbps, new_total_mbps, detail,
                     )
                     link_event = (now, previous_link, confirmed_link, old_total_mbps, new_total_mbps)
             except Exception as e:
