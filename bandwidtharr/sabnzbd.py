@@ -22,9 +22,18 @@ class SabnzbdClient:
 
     def _call(self, params: dict) -> dict:
         params = {**params, "apikey": self.api_key, "output": "json"}
-        resp = self.session.get(f"{self.base_url}/sabnzbd/api", params=params, timeout=self.timeout)
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = self.session.get(f"{self.base_url}/sabnzbd/api", params=params, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.RequestException as e:
+            # The apikey is in the query string, and requests embeds the full
+            # URL in these exceptions' str() -- which is exactly what ends up
+            # in logs and the (unauthenticated) dashboard's error fields on
+            # any failure. Strip it so a connection hiccup doesn't leak the
+            # key. `from None` so a future traceback dump can't reintroduce
+            # it via the original exception's chained cause.
+            raise RuntimeError(str(e).replace(self.api_key, "***")) from None
 
     def get_download_speed(self) -> float:
         """Current download speed in bytes/sec."""
