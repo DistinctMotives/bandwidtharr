@@ -126,7 +126,9 @@ automatically by whether you've set an ISP match:
   public IP to that third-party API on every check.
 
 Either way, every confirmed switch (in both directions) is logged at `INFO`
-and shown live on the dashboard.
+and shown live on the dashboard, which displays the current link state, the
+detected IP/ISP behind it, when it was last/next checked, and a rolling log
+of recent failover/failback events with timestamps.
 
 ## Development
 

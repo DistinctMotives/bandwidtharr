@@ -28,8 +28,11 @@ _DNS_HEADER = struct.Struct("!HHHHHH")
 
 
 class LinkDetector:
-    def check(self) -> str:
-        """Return PRIMARY or BACKUP. Raises on any failure to determine it."""
+    def check(self) -> tuple[str, str]:
+        """Return (state, detail): state is PRIMARY or BACKUP, detail is a
+        short human-readable string (e.g. the current public IP/ISP) for
+        display, "" if there's nothing meaningful to show. Raises on any
+        failure to determine the state."""
         raise NotImplementedError
 
 
@@ -37,8 +40,8 @@ class NullDetector(LinkDetector):
     """No detector configured -- always primary, so the feature is a no-op
     unless explicitly enabled via LINK_DETECTOR."""
 
-    def check(self) -> str:
-        return PRIMARY
+    def check(self) -> tuple[str, str]:
+        return PRIMARY, ""
 
 
 def _encode_qname(hostname: str) -> bytes:
@@ -119,13 +122,13 @@ class DnsBaselineDetector(LinkDetector):
         self.timeout = timeout
         self._baseline_ip: str | None = None
 
-    def check(self) -> str:
+    def check(self) -> tuple[str, str]:
         ip = _query_a_record(self.lookup_host, self.resolver, self.timeout)
         if self._baseline_ip is None:
             self._baseline_ip = ip
             log.info("link_detector: baselined primary public IP as %s", ip)
-            return PRIMARY
-        return PRIMARY if ip == self._baseline_ip else BACKUP
+            return PRIMARY, ip
+        return (PRIMARY if ip == self._baseline_ip else BACKUP), ip
 
 
 def classify_isp(isp_string: str, primary_match: str, backup_match: str) -> str:
@@ -161,12 +164,14 @@ class IspMatchDetector(LinkDetector):
         self.timeout = timeout
         self.session = requests.Session()
 
-    def check(self) -> str:
+    def check(self) -> tuple[str, str]:
         resp = self.session.get(self.lookup_url, timeout=self.timeout)
         resp.raise_for_status()
         data = resp.json()
-        isp_string = " ".join(str(data.get(k, "")) for k in ("isp", "org", "as"))
-        return classify_isp(isp_string, self.primary_match, self.backup_match)
+        isp_string = " ".join(v for k in ("isp", "org", "as") if (v := str(data.get(k, "")).strip()))
+        ip = str(data.get("query", "")).strip()
+        detail = f"{ip} ({isp_string})" if ip and isp_string else (ip or isp_string)
+        return classify_isp(isp_string, self.primary_match, self.backup_match), detail
 
 
 class LinkStateTracker:
@@ -211,7 +216,7 @@ def build_link_detector(env: dict) -> LinkDetector:
     primary_match = env.get("PRIMARY_ISP_MATCH", "")
     backup_match = env.get("BACKUP_ISP_MATCH", "")
     if primary_match or backup_match:
-        lookup_url = env.get("IP_LOOKUP_URL", "http://ip-api.com/json/?fields=isp,org,as")
+        lookup_url = env.get("IP_LOOKUP_URL", "http://ip-api.com/json/?fields=isp,org,as,query")
         return IspMatchDetector(lookup_url, primary_match, backup_match)
 
     lookup_host = env.get("DNS_LOOKUP_HOST", "myip.opendns.com")

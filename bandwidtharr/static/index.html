@@ -62,14 +62,56 @@
   .status-dot.error { background: #ef4444; }
   .link-status {
     display: none;
+    flex-direction: column;
+    gap: 2px;
+    margin: -10px 0 16px;
+  }
+  .link-status.show { display: flex; }
+  .link-status-main {
+    display: flex;
     align-items: center;
     gap: 8px;
     font-size: 13px;
     color: var(--muted);
-    margin: -10px 0 16px;
   }
-  .link-status.show { display: flex; }
   .link-status .status-dot { margin-left: 0; }
+  .link-status-detail {
+    font-size: 12px;
+    color: var(--muted);
+    opacity: 0.75;
+  }
+  .link-log-card {
+    display: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-top: 12px;
+  }
+  .link-log-card.show { display: block; }
+  .link-log-header {
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .link-log {
+    max-height: 160px;
+    overflow-y: auto;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .link-log-entry {
+    display: flex;
+    gap: 10px;
+    padding: 5px 0;
+    border-top: 1px solid var(--border);
+  }
+  .link-log-entry:first-child { border-top: none; }
+  .link-log-entry .ts { color: var(--muted); flex-shrink: 0; }
+  .link-log-entry .dir { flex-shrink: 0; font-weight: 600; }
+  .link-log-entry .dir.failover { color: #ef4444; }
+  .link-log-entry .dir.recovery { color: #3ecf6d; }
+  .link-log-empty { color: var(--muted); font-size: 12px; }
   .card .speed { font-size: 26px; font-weight: 600; line-height: 1.1; }
   .card .limit { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .card .limit.error { color: #ef4444; }
@@ -106,8 +148,11 @@
 <div class="wrap">
   <h1>bandwidtharr</h1>
   <div class="link-status" id="link-status">
-    <span class="status-dot" id="link-status-dot"></span>
-    <span id="link-status-text">Link: primary</span>
+    <div class="link-status-main">
+      <span class="status-dot" id="link-status-dot"></span>
+      <span id="link-status-text">Link: primary</span>
+    </div>
+    <div class="link-status-detail" id="link-status-detail"></div>
   </div>
   <div class="cards">
     <div class="card">
@@ -141,6 +186,13 @@
     </div>
     <canvas id="graph"></canvas>
   </div>
+
+  <div class="link-log-card" id="link-log-card">
+    <div class="link-log-header">Failover log</div>
+    <div class="link-log" id="link-log">
+      <div class="link-log-empty">No failovers recorded yet.</div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -156,6 +208,9 @@ const totalLineEl = document.getElementById('total-line');
 const linkStatusEl = document.getElementById('link-status');
 const linkStatusDotEl = document.getElementById('link-status-dot');
 const linkStatusTextEl = document.getElementById('link-status-text');
+const linkStatusDetailEl = document.getElementById('link-status-detail');
+const linkLogCardEl = document.getElementById('link-log-card');
+const linkLogEl = document.getElementById('link-log');
 const canvas = document.getElementById('graph');
 const ctx = canvas.getContext('2d');
 
@@ -254,8 +309,15 @@ function updateCard(speedEl, limitEl, barEl, statusDotEl, speed, limit, ok, erro
   }
 }
 
-function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps) {
+function fmtRelative(seconds) {
+  if (seconds < 1) return 'now';
+  if (seconds < 60) return Math.round(seconds) + 's';
+  return Math.round(seconds / 60) + 'm';
+}
+
+function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps, detail, lastCheckAt, nextCheckAt) {
   linkStatusEl.classList.toggle('show', linkEnabled);
+  linkLogCardEl.classList.toggle('show', linkEnabled);
   if (!linkEnabled) return;
 
   linkStatusDotEl.classList.toggle('ok', linkOk && activeLink === 'primary');
@@ -268,6 +330,30 @@ function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps) {
   } else {
     linkStatusTextEl.textContent = 'Link: primary';
   }
+
+  const nowSec = Date.now() / 1000;
+  const parts = [];
+  if (detail) parts.push(detail);
+  if (lastCheckAt) parts.push('checked ' + fmtRelative(nowSec - lastCheckAt) + ' ago');
+  if (nextCheckAt) parts.push('next in ' + fmtRelative(nextCheckAt - nowSec));
+  linkStatusDetailEl.textContent = parts.join(' · ');
+}
+
+function updateLinkLog(events) {
+  if (!events || !events.length) {
+    linkLogEl.innerHTML = '<div class="link-log-empty">No failovers recorded yet.</div>';
+    return;
+  }
+  const rows = events.slice().reverse().map(([ts, previous, current, oldMbps, newMbps]) => {
+    const isFailover = current === 'backup';
+    const dirClass = isFailover ? 'failover' : 'recovery';
+    const dirText = isFailover ? 'Failed over' : 'Recovered';
+    const time = new Date(ts * 1000).toLocaleTimeString();
+    return '<div class="link-log-entry"><span class="ts">' + time + '</span>'
+      + '<span class="dir ' + dirClass + '">' + dirText + '</span>'
+      + '<span>' + fmt(oldMbps) + ' → ' + fmt(newMbps) + '</span></div>';
+  });
+  linkLogEl.innerHTML = rows.join('');
 }
 
 async function poll() {
@@ -290,7 +376,8 @@ async function poll() {
       totalLineEl.textContent = 'not arbitrating (waiting on both apps)';
     }
 
-    updateLink(s.link_enabled, s.active_link, s.link_ok, s.link_error, total);
+    updateLink(s.link_enabled, s.active_link, s.link_ok, s.link_error, total, s.link_detail, s.last_link_check_at, s.next_link_check);
+    updateLinkLog(s.link_events);
     drawGraph(s.history, s.total);
   } catch (e) {
     totalLineEl.textContent = 'dashboard connection lost';

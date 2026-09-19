@@ -43,6 +43,8 @@ def main() -> None:
     next_link_check = 0.0
     link_ok = True
     link_error = None
+    link_detail = ""
+    last_link_check_at = None
 
     qbit = QBittorrentClient(
         base_url=os.environ["QBIT_URL"],
@@ -77,6 +79,7 @@ def main() -> None:
         qbit_error, sab_error = None, None
         qbit_speed, sab_speed = 0.0, 0.0
         link_changed = False
+        link_event = None
 
         try:
             qbit_speed = qbit.get_download_speed()
@@ -94,8 +97,10 @@ def main() -> None:
 
         now = time.time()
         if now >= next_link_check:
+            last_link_check_at = now
             try:
-                reading = link_detector.check()
+                reading, detail = link_detector.check()
+                link_detail = detail
                 previous_link = link_tracker.confirmed
                 confirmed_link = link_tracker.observe(reading)
                 link_ok = True
@@ -109,6 +114,7 @@ def main() -> None:
                         "failed over" if confirmed_link == BACKUP else "recovered",
                         previous_link, confirmed_link, old_total_mbps, new_total_mbps,
                     )
+                    link_event = (now, previous_link, confirmed_link, old_total_mbps, new_total_mbps)
             except Exception as e:
                 link_ok = False
                 link_error = str(e)
@@ -174,7 +180,9 @@ def main() -> None:
             effective_total, qbit_speed, qbit_limit, sab_speed, sab_limit,
             qbit_ok=qbit_ok, sab_ok=sab_ok, qbit_error=qbit_error, sab_error=sab_error,
             link_enabled=link_enabled, active_link=link_tracker.confirmed,
-            link_ok=link_ok, link_error=link_error,
+            link_ok=link_ok, link_error=link_error, link_detail=link_detail,
+            last_link_check_at=last_link_check_at, next_link_check=next_link_check,
+            link_event=link_event,
         )
 
         log.debug(
