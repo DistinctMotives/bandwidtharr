@@ -48,3 +48,10 @@ class QBittorrentClient:
             "/api/v2/transfer/setDownloadLimit",
             data={"limit": int(limit_bytes_per_sec)},
         )
+
+    def set_upload_limit(self, limit_bytes_per_sec: int) -> None:
+        self._request(
+            "POST",
+            "/api/v2/transfer/setUploadLimit",
+            data={"limit": int(limit_bytes_per_sec)},
+        )

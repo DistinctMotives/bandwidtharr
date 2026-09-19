@@ -17,6 +17,15 @@ def mbps_to_bytes(mbps: float) -> float:
     return mbps * 1_000_000 / 8
 
 
+def optional_mbps_env(name: str) -> float | None:
+    """Like os.environ.get(name), but treats an unset OR blank value (e.g.
+    `FOO=` in .env, which docker compose still passes through as an empty
+    string rather than omitting the var) as "not configured", converted to
+    bytes/sec. Distinguishes "not configured" from an explicit 0."""
+    raw = os.environ.get(name, "").strip()
+    return mbps_to_bytes(float(raw)) if raw else None
+
+
 def main() -> None:
     total = mbps_to_bytes(float(os.environ.get("TOTAL_LIMIT_MBPS", "800")))
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "3"))
@@ -27,15 +36,20 @@ def main() -> None:
 
     link_detector_kind = os.environ.get("LINK_DETECTOR", "none").strip().lower()
     link_enabled = link_detector_kind not in ("", "none")
-    if link_enabled and "BACKUP_TOTAL_LIMIT_MBPS" not in os.environ:
+    backup_total = optional_mbps_env("BACKUP_TOTAL_LIMIT_MBPS")
+    if link_enabled and backup_total is None:
         raise RuntimeError("BACKUP_TOTAL_LIMIT_MBPS must be set when LINK_DETECTOR is enabled")
-    backup_total = (
-        mbps_to_bytes(float(os.environ["BACKUP_TOTAL_LIMIT_MBPS"]))
-        if "BACKUP_TOTAL_LIMIT_MBPS" in os.environ
-        else None
-    )
+
+    # Static qBittorrent upload cap, independent of the download arbitration
+    # above -- optional, .env-only, off (untouched) unless configured.
+    qbit_upload_limit = optional_mbps_env("QBIT_UPLOAD_LIMIT_MBPS")
+    qbit_upload_limit_backup = optional_mbps_env("QBIT_UPLOAD_LIMIT_BACKUP_MBPS")
+    if qbit_upload_limit_backup is not None and qbit_upload_limit is None:
+        raise RuntimeError("QBIT_UPLOAD_LIMIT_MBPS must be set when QBIT_UPLOAD_LIMIT_BACKUP_MBPS is set")
+    last_applied_upload_limit = None
+
     link_check_interval = float(os.environ.get("LINK_CHECK_INTERVAL_SECONDS", "30"))
-    link_check_idle_interval = float(os.environ.get("LINK_CHECK_IDLE_INTERVAL_SECONDS", "300"))
+    link_check_idle_interval = float(os.environ.get("LINK_CHECK_IDLE_INTERVAL_SECONDS", "900"))
     link_check_min_speed = mbps_to_bytes(float(os.environ.get("LINK_CHECK_MIN_SPEED_MBPS", "5")))
     link_confirm_count = int(os.environ.get("LINK_FAILOVER_CONFIRM_COUNT", "2"))
     link_detector = build_link_detector(os.environ)
@@ -43,7 +57,6 @@ def main() -> None:
     next_link_check = 0.0
     link_ok = True
     link_error = None
-    link_detail = ""
     last_link_check_at = None
 
     qbit = QBittorrentClient(
@@ -67,10 +80,11 @@ def main() -> None:
     sab_limit = total
 
     log.info(
-        "starting: total=%.0fMbps floor=%.0fMbps poll=%ss web_port=%s link_detector=%s%s",
+        "starting: total=%.0fMbps floor=%.0fMbps poll=%ss web_port=%s link_detector=%s%s%s",
         total * 8 / 1_000_000, min_floor * 8 / 1_000_000, poll_interval, web_port,
         link_detector_kind,
         f" backup_total={backup_total * 8 / 1_000_000:.0f}Mbps" if backup_total else "",
+        f" qbit_upload_limit={qbit_upload_limit * 8 / 1_000_000:.0f}Mbps" if qbit_upload_limit else "",
     )
 
     first_cycle = True
@@ -96,11 +110,18 @@ def main() -> None:
             log.warning("sab unreachable: %s", e)
 
         now = time.time()
-        if now >= next_link_check:
+        combined_speed = qbit_speed + sab_speed
+        is_active = combined_speed >= link_check_min_speed
+        # A check made while idle schedules the next one on the coarser idle
+        # cadence, which can be minutes out. If downloads resume partway
+        # through that wait, don't sit on the stale schedule -- check now
+        # rather than waiting up to LINK_CHECK_IDLE_INTERVAL_SECONDS for a
+        # budget that may already be wrong for the active link.
+        check_due = now >= next_link_check or (is_active and next_link_check - now > link_check_interval)
+        if check_due:
             last_link_check_at = now
             try:
-                reading, detail = link_detector.check()
-                link_detail = detail
+                reading, _detail = link_detector.check()
                 previous_link = link_tracker.confirmed
                 confirmed_link = link_tracker.observe(reading)
                 link_ok = True
@@ -123,11 +144,28 @@ def main() -> None:
             # isn't making DNS/HTTP calls purely to watch nothing happen, but
             # status still refreshes on its own rather than going stale
             # indefinitely -- see LINK_CHECK_IDLE_INTERVAL_SECONDS.
-            combined_speed = qbit_speed + sab_speed
-            interval = link_check_interval if combined_speed >= link_check_min_speed else link_check_idle_interval
+            interval = link_check_interval if is_active else link_check_idle_interval
             next_link_check = now + interval
 
         effective_total = backup_total if link_tracker.confirmed == BACKUP else total
+
+        # Static upload cap, independent of the download arbitration below --
+        # only touches qBittorrent when configured, and only re-applies when
+        # the value that should be in effect actually changes (link failover
+        # swaps it, or this is the first time we've been able to set it).
+        if qbit_ok and qbit_upload_limit is not None:
+            effective_upload_limit = (
+                qbit_upload_limit_backup
+                if link_tracker.confirmed == BACKUP and qbit_upload_limit_backup is not None
+                else qbit_upload_limit
+            )
+            if effective_upload_limit != last_applied_upload_limit:
+                try:
+                    qbit.set_upload_limit(int(effective_upload_limit))
+                    log.info("qbit upload limit -> %.0f Mbps", effective_upload_limit * 8 / 1_000_000)
+                    last_applied_upload_limit = effective_upload_limit
+                except Exception as e:
+                    log.warning("failed to set qbit upload limit: %s", e)
 
         # Only arbitrate once both are reachable -- allocate() needs both
         # sides' real speed to mean anything, and there's nothing useful to
@@ -180,9 +218,9 @@ def main() -> None:
             effective_total, qbit_speed, qbit_limit, sab_speed, sab_limit,
             qbit_ok=qbit_ok, sab_ok=sab_ok, qbit_error=qbit_error, sab_error=sab_error,
             link_enabled=link_enabled, active_link=link_tracker.confirmed,
-            link_ok=link_ok, link_error=link_error, link_detail=link_detail,
+            link_ok=link_ok, link_error=link_error,
             last_link_check_at=last_link_check_at, next_link_check=next_link_check,
-            link_event=link_event,
+            downloading=is_active, link_event=link_event,
         )
 
         log.debug(

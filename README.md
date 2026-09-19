@@ -68,10 +68,12 @@ All configuration is via `.env` (see `.env.example`):
 | `PROBE_STEP_MBPS`            | How much extra demand to assume for an app saturating its own cap      | `40` |
 | `CHANGE_THRESHOLD_FRACTION`  | Minimum relative change before a new limit is actually applied (hysteresis, avoids noisy API calls) | `0.05` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
+| `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
+| `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |
 | `LINK_DETECTOR`               | `none` or `public_ip` -- see [WAN failover detection](#wan-failover-detection)    | `none` |
 | `BACKUP_TOTAL_LIMIT_MBPS`     | Budget to use while on the backup link (required if `LINK_DETECTOR` is set)  | *(none)* |
 | `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` | `30` |
-| `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `300` |
+| `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
 | `PRIMARY_ISP_MATCH` / `BACKUP_ISP_MATCH` | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
@@ -126,9 +128,11 @@ automatically by whether you've set an ISP match:
   public IP to that third-party API on every check.
 
 Either way, every confirmed switch (in both directions) is logged at `INFO`
-and shown live on the dashboard, which displays the current link state, the
-detected IP/ISP behind it, when it was last/next checked, and a rolling log
-of recent failover/failback events with timestamps.
+and shown live on the dashboard, which displays the current link state,
+whether it's currently treating traffic as downloading or idle, when it was
+last/next checked, and a rolling log of recent failover/failback events with
+timestamps. The detected IP/ISP itself is never sent to the browser -- it's
+only ever logged server-side (`docker logs`).
 
 ## Development
 

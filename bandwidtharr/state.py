@@ -22,9 +22,9 @@ class SharedState:
         self._active_link = "primary"
         self._link_ok = True
         self._link_error: str | None = None
-        self._link_detail = ""
         self._last_link_check_at: float | None = None
         self._next_link_check: float | None = None
+        self._downloading = False
         self._history: deque = deque(maxlen=history_len)
         self._link_events: deque = deque(maxlen=link_events_len)
 
@@ -43,9 +43,9 @@ class SharedState:
         active_link: str = "primary",
         link_ok: bool = True,
         link_error: str | None = None,
-        link_detail: str = "",
         last_link_check_at: float | None = None,
         next_link_check: float | None = None,
+        downloading: bool = False,
         link_event: tuple | None = None,
     ) -> None:
         with self._lock:
@@ -62,9 +62,9 @@ class SharedState:
             self._active_link = active_link
             self._link_ok = link_ok
             self._link_error = link_error
-            self._link_detail = link_detail
             self._last_link_check_at = last_link_check_at
             self._next_link_check = next_link_check
+            self._downloading = downloading
             self._history.append((time.time(), qbit_speed, sab_speed))
             if link_event is not None:
                 self._link_events.append(link_event)
@@ -85,9 +85,9 @@ class SharedState:
                 "active_link": self._active_link,
                 "link_ok": self._link_ok,
                 "link_error": self._link_error,
-                "link_detail": self._link_detail,
                 "last_link_check_at": self._last_link_check_at,
                 "next_link_check": self._next_link_check,
+                "downloading": self._downloading,
                 "history": list(self._history),
                 "link_events": list(self._link_events),
             }

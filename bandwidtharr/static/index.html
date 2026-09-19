@@ -13,6 +13,7 @@
     --muted: #8b93a1;
     --qbit: #4f9dff;
     --sab: #ff9f4f;
+    --link: #a78bfa;
     --budget: #6b7280;
   }
   * { box-sizing: border-box; }
@@ -26,26 +27,31 @@
   h1 {
     font-size: 18px;
     font-weight: 600;
-    margin: 0 0 20px;
+    margin: 0;
     letter-spacing: 0.02em;
   }
-  .wrap { max-width: 900px; margin: 0 auto; }
+  .wrap {
+    max-width: 900px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
   .cards {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 12px;
-    margin-bottom: 20px;
   }
   @media (max-width: 480px) {
     .cards { grid-template-columns: 1fr; }
   }
-  .card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 16px;
-  }
-  .card .label {
+  .card .label, .graph-header, .link-log-header {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -60,40 +66,15 @@
   }
   .status-dot.ok { background: #3ecf6d; }
   .status-dot.error { background: #ef4444; }
-  .link-status {
+  .link-card {
     display: none;
-    flex-direction: column;
-    gap: 2px;
-    margin: -10px 0 16px;
   }
-  .link-status.show { display: flex; }
-  .link-status-main {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-    color: var(--muted);
-  }
-  .link-status .status-dot { margin-left: 0; }
-  .link-status-detail {
-    font-size: 12px;
-    color: var(--muted);
-    opacity: 0.75;
-  }
+  .link-card.show { display: block; }
+  .link-state { font-size: 16px; font-weight: 600; line-height: 1.3; }
   .link-log-card {
     display: none;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-top: 12px;
   }
   .link-log-card.show { display: block; }
-  .link-log-header {
-    font-size: 13px;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }
   .link-log {
     max-height: 160px;
     overflow-y: auto;
@@ -124,20 +105,7 @@
     overflow: hidden;
   }
   .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
-  .graph-card {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-  }
-  .graph-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 10px;
-    font-size: 13px;
-    color: var(--muted);
-  }
+  .graph-header { justify-content: space-between; align-items: baseline; }
   .legend { display: flex; gap: 16px; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   canvas { width: 100%; height: 220px; display: block; }
@@ -147,15 +115,8 @@
 <body>
 <div class="wrap">
   <h1>bandwidtharr</h1>
-  <div class="link-status" id="link-status">
-    <div class="link-status-main">
-      <span class="status-dot" id="link-status-dot"></span>
-      <span id="link-status-text">Link: primary</span>
-    </div>
-    <div class="link-status-detail" id="link-status-detail"></div>
-  </div>
   <div class="cards">
-    <div class="card">
+    <div class="card panel">
       <div class="label">
         <span class="dot" style="background:var(--qbit)"></span>qBittorrent
         <span class="status-dot" id="qbit-status-dot" title="connecting..."></span>
@@ -164,7 +125,7 @@
       <div class="limit" id="qbit-limit">limit &mdash;</div>
       <div class="bar-track"><div class="bar-fill" id="qbit-bar" style="background:var(--qbit); width:0%"></div></div>
     </div>
-    <div class="card">
+    <div class="card panel">
       <div class="label">
         <span class="dot" style="background:var(--sab)"></span>SABnzbd
         <span class="status-dot" id="sab-status-dot" title="connecting..."></span>
@@ -173,9 +134,17 @@
       <div class="limit" id="sab-limit">limit &mdash;</div>
       <div class="bar-track"><div class="bar-fill" id="sab-bar" style="background:var(--sab); width:0%"></div></div>
     </div>
+    <div class="card link-card panel" id="link-status">
+      <div class="label">
+        <span class="dot" style="background:var(--link)"></span>Link
+        <span class="status-dot" id="link-status-dot"></span>
+      </div>
+      <div class="link-state" id="link-status-text">Primary</div>
+      <div class="limit" id="link-status-detail"></div>
+    </div>
   </div>
 
-  <div class="graph-card">
+  <div class="graph-card panel">
     <div class="graph-header">
       <div class="legend">
         <span><span class="dot" style="background:var(--qbit)"></span>qBittorrent</span>
@@ -187,8 +156,8 @@
     <canvas id="graph"></canvas>
   </div>
 
-  <div class="link-log-card" id="link-log-card">
-    <div class="link-log-header">Failover log</div>
+  <div class="link-log-card panel" id="link-log-card">
+    <div class="link-log-header"><span class="dot" style="background:var(--link)"></span>Failover log</div>
     <div class="link-log" id="link-log">
       <div class="link-log-empty">No failovers recorded yet.</div>
     </div>
@@ -315,7 +284,7 @@ function fmtRelative(seconds) {
   return Math.round(seconds / 60) + 'm';
 }
 
-function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps, detail, lastCheckAt, nextCheckAt) {
+function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps, lastCheckAt, nextCheckAt, downloading) {
   linkStatusEl.classList.toggle('show', linkEnabled);
   linkLogCardEl.classList.toggle('show', linkEnabled);
   if (!linkEnabled) return;
@@ -324,16 +293,15 @@ function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps, detai
   linkStatusDotEl.classList.toggle('error', !linkOk);
 
   if (!linkOk) {
-    linkStatusTextEl.textContent = 'Link: unknown (' + (linkError || 'detector error') + ')';
+    linkStatusTextEl.textContent = 'Unknown (' + (linkError || 'detector error') + ')';
   } else if (activeLink === 'backup') {
-    linkStatusTextEl.textContent = 'Link: backup — throttled to ' + fmt(totalMbps);
+    linkStatusTextEl.textContent = 'Backup — throttled to ' + fmt(totalMbps);
   } else {
-    linkStatusTextEl.textContent = 'Link: primary';
+    linkStatusTextEl.textContent = 'Primary';
   }
 
   const nowSec = Date.now() / 1000;
-  const parts = [];
-  if (detail) parts.push(detail);
+  const parts = [downloading ? 'currently downloading' : 'currently idle'];
   if (lastCheckAt) parts.push('checked ' + fmtRelative(nowSec - lastCheckAt) + ' ago');
   if (nextCheckAt) parts.push('next in ' + fmtRelative(nextCheckAt - nowSec));
   linkStatusDetailEl.textContent = parts.join(' · ');
@@ -376,7 +344,7 @@ async function poll() {
       totalLineEl.textContent = 'not arbitrating (waiting on both apps)';
     }
 
-    updateLink(s.link_enabled, s.active_link, s.link_ok, s.link_error, total, s.link_detail, s.last_link_check_at, s.next_link_check);
+    updateLink(s.link_enabled, s.active_link, s.link_ok, s.link_error, total, s.last_link_check_at, s.next_link_check, s.downloading);
     updateLinkLog(s.link_events);
     drawGraph(s.history, s.total);
   } catch (e) {
