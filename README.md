@@ -81,9 +81,9 @@ All configuration is via `.env` (see `.env.example`):
 | `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
-| `BACKUP_ISP_MATCH`            | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
-| `IP_LOOKUP_URL`               | IP-info endpoint used by ISP-name matching                              | `http://ip-api.com/json/?fields=isp,org,as,query` |
-| `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used by the default DNS-only IP-baseline check    | `myip.opendns.com` / `208.67.222.222` |
+| `BACKUP_ISP_MATCH`            | ISP/org/AS-name substrings (comma-separated) identifying the backup link (required if `LINK_DETECTOR` is set) | *(none)* |
+| `IP_LOOKUP_URL`               | Set to opt into an HTTP-based ISP lookup instead of the default DNS-only one | *(unset, DNS-only)* |
+| `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used for the "what's my public IP" and ISP/ASN lookups | `myip.opendns.com` / `208.67.222.222` |
 
 ## Web dashboard
 
@@ -111,51 +111,46 @@ router, regardless of vendor, since it detects the failover from the outside,
 by noticing that your public egress path changed, not by talking to your
 router.
 
-Off by default. Set `LINK_DETECTOR=public_ip` and `BACKUP_TOTAL_LIMIT_MBPS`
-to turn it on; set `LINK_DETECTOR` back to `none` (or remove it) to turn it
-off again -- bandwidtharr then makes no DNS/HTTP calls for link detection and
-the dashboard's link badge disappears. Two detection modes, chosen
-automatically by whether you've set an ISP match:
+Off by default. Set `LINK_DETECTOR=public_ip`, `BACKUP_TOTAL_LIMIT_MBPS`,
+and `BACKUP_ISP_MATCH` (comma-separated, case-insensitive substrings
+identifying your backup link's ISP/org/AS name, e.g.
+`BACKUP_ISP_MATCH=Starlink,SpaceX`) to turn it on -- all three are required
+together. `BACKUP_ISP_MATCH` classifies primary vs. backup directly by
+who's actually serving your traffic, rather than inferring it from "did the
+IP change": correct from the very first check regardless of which link is
+active when bandwidtharr starts, and unaffected by your primary ISP simply
+rotating its own dynamic IP. If the lookup ever returns something
+unrecognized (a hiccup, an outage), it fails toward primary -- i.e. toward
+*not* throttling -- rather than toward backup.
 
-- **Default (no config beyond the two above):** a DNS-only check -- no
-  third-party HTTP call -- that remembers the public IP seen when
-  bandwidtharr started (assumed to be the primary link) and treats any later,
-  persistent change as a failover. Simple and private, but a primary ISP that
-  itself rotates your dynamic IP can look like a failover; `LINK_FAILOVER_CONFIRM_COUNT`
-  (default 2 consecutive checks) guards against a single blip, but a longer-lived
-  IP rotation could still misfire. This learned IP is persisted to the
-  `bandwidtharr_state` volume (see `docker-compose.yml`) so a container
-  restart or update while already failed over doesn't wrongly re-baseline
-  the backup link as primary -- a persisted value older than 24h is treated
-  as stale and re-learned fresh instead, in case it was legitimately out of
-  date rather than a failover.
-- **Opt-in ISP matching:** set `BACKUP_ISP_MATCH` (comma-separated,
-  case-insensitive substrings, e.g. `BACKUP_ISP_MATCH=Starlink,T-Mobile`)
-  and bandwidtharr instead calls `IP_LOOKUP_URL` (an IP-info API, default
-  `ip-api.com`) each check to read the actual ISP/org name behind your
-  current public IP -- backup if it matches, primary otherwise (including
-  if the lookup ever returns something unrecognized, so a hiccup fails
-  toward *not* throttling rather than toward throttling). More robust
-  against ordinary IP rotation on the primary link, at the cost of sending
-  your public IP to that third-party API on every check.
+Don't guess the match value -- query
+`http://ip-api.com/json/<your-backup-link-IP>?fields=isp,org,as` to see
+what's actually returned. The carrier name isn't always in the `isp`
+field: for Starlink, `isp` is SpaceX's corporate name and "Starlink" only
+shows up in `org`. List multiple comma-separated terms for robustness
+(e.g. `Starlink,SpaceX,Space Exploration`) rather than a single guess, so a
+change in one field's exact wording doesn't silently break the match.
 
-  Don't guess the value -- query
-  `http://ip-api.com/json/<your-backup-link-IP>?fields=isp,org,as` to see
-  what's actually returned. The carrier name isn't always in the `isp`
-  field: for Starlink, `isp` is SpaceX's corporate name and "Starlink"
-  only shows up in `org`. List multiple comma-separated terms for
-  robustness (e.g. `Starlink,SpaceX,Space Exploration`) rather than a
-  single guess, so a change in one field's exact wording doesn't silently
-  break the match.
+Two lookup mechanisms, chosen by whether you've set `IP_LOOKUP_URL`:
+
+- **Default:** two DNS queries against [Team Cymru's free public
+  IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) (plus one
+  more to learn your current public IP, the same DNS trick used before) --
+  no third-party HTTP call at all, just ordinary DNS.
+- **Opt-in HTTP:** set `IP_LOOKUP_URL` (default when set:
+  `http://ip-api.com/json/?fields=isp,org,as,query`) and bandwidtharr calls
+  that instead -- useful if Team Cymru's service is ever unavailable, or
+  you want a specific HTTP provider. Sends your public IP to that
+  third-party API on every check.
 
 Either way, every confirmed switch (in both directions) is logged at `INFO`
 and shown live on the dashboard, which displays the current link state,
 whether it's currently treating traffic as downloading or idle, when it was
 last/next checked, and a rolling log (last 50 events) of recent
-failover/failback events with timestamps -- also persisted to the
-`bandwidtharr_state` volume, so it survives restarts and updates the same
-way the learned baseline IP does. The detected IP/ISP itself is never sent
-to the browser -- it's only ever logged server-side (`docker logs`).
+failover/failback events with timestamps -- persisted to the
+`bandwidtharr_state` volume, so it survives restarts and updates. The
+detected IP/ISP itself is never sent to the browser -- it's only ever
+logged server-side (`docker logs`).
 
 ## Development
 

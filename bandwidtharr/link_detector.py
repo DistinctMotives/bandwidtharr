@@ -4,15 +4,15 @@ in a lower total budget while on backup.
 
 Kept vendor-agnostic and pluggable: `LinkDetector` is the interface a future
 vendor-specific detector would also implement, without any changes to
-main.py's loop or allocator.py. v1 ships one implementation,
-`DnsBaselineDetector`/`IspMatchDetector`, selected by `build_link_detector()`
-based on config.
+main.py's loop or allocator.py. Ships two implementations, selected by
+`build_link_detector()`: `AsnMatchDetector` (default, DNS-only) and
+`IspMatchDetector` (opt-in, HTTP-based -- set IP_LOOKUP_URL to use it).
+BACKUP_ISP_MATCH is required whenever LINK_DETECTOR=public_ip is set.
 
 Same conventions as qbittorrent.py/sabnzbd.py: raise on any check failure,
 never guess -- the caller decides what "unknown" means.
 """
 
-import json
 import logging
 import random
 import socket
@@ -27,6 +27,8 @@ PRIMARY = "primary"
 BACKUP = "backup"
 
 _DNS_HEADER = struct.Struct("!HHHHHH")
+_QTYPE_A = 1
+_QTYPE_TXT = 16
 
 
 class LinkDetector:
@@ -67,13 +69,13 @@ def _skip_name(data: bytes, offset: int) -> int:
     return offset + 1
 
 
-def _query_a_record(hostname: str, resolver: str, timeout: float) -> str:
-    """Send a single A-record query straight to `resolver` over UDP and
-    return the first IPv4 address in the response. No third-party HTTP
-    service involved -- just an ordinary DNS query."""
+def _dns_query(hostname: str, resolver: str, timeout: float, qtype: int) -> bytes:
+    """Send a single DNS query of `qtype` straight to `resolver` over UDP
+    and return the RDATA bytes of the first matching answer. No
+    third-party HTTP service involved -- just an ordinary DNS query."""
     txid = random.randint(0, 0xFFFF)
     header = _DNS_HEADER.pack(txid, 0x0100, 1, 0, 0, 0)
-    question = _encode_qname(hostname) + struct.pack("!HH", 1, 1)  # type=A, class=IN
+    question = _encode_qname(hostname) + struct.pack("!HH", qtype, 1)  # class=IN
     packet = header + question
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -87,8 +89,6 @@ def _query_a_record(hostname: str, resolver: str, timeout: float) -> str:
     resp_id, _flags, qdcount, ancount, _nscount, _arcount = _DNS_HEADER.unpack_from(response, 0)
     if resp_id != txid:
         raise ValueError("DNS response transaction ID mismatch")
-    if ancount < 1:
-        raise ValueError(f"no A records returned for {hostname}")
 
     offset = 12
     for _ in range(qdcount):
@@ -98,74 +98,49 @@ def _query_a_record(hostname: str, resolver: str, timeout: float) -> str:
         offset = _skip_name(response, offset)
         rtype, rclass, _ttl, rdlength = struct.unpack_from("!HHIH", response, offset)
         offset += 10
-        if rtype == 1 and rclass == 1 and rdlength == 4:
-            return socket.inet_ntoa(response[offset:offset + 4])
+        if rtype == qtype and rclass == 1:
+            return response[offset:offset + rdlength]
         offset += rdlength
 
-    raise ValueError(f"no A record found in response for {hostname}")
+    raise ValueError(f"no matching record found in response for {hostname}")
 
 
-class DnsBaselineDetector(LinkDetector):
-    """Vendor-agnostic default: learns the public IP seen at startup (assumed
-    to be on the primary link) via a single DNS A-record query -- no
-    third-party HTTP call -- and reports BACKUP whenever a later check sees a
-    different IP.
+def _query_a_record(hostname: str, resolver: str, timeout: float) -> str:
+    """Return the first IPv4 address for `hostname`'s A record."""
+    rdata = _dns_query(hostname, resolver, timeout, _QTYPE_A)
+    if len(rdata) != 4:
+        raise ValueError(f"unexpected A record length for {hostname}")
+    return socket.inet_ntoa(rdata)
 
-    Known limitation: if the primary ISP itself rotates the dynamic IP,
-    that alone looks identical to a failover here. Mitigated by requiring
-    several consecutive differing checks (see LinkStateTracker) before
-    actually treating it as one; anyone who wants to avoid this entirely can
-    opt into IspMatchDetector instead.
 
-    If `state_file` is given, the learned baseline is persisted there (and
-    loaded back on construction if present and not older than
-    `max_persisted_age`), so a container restart while already on the
-    backup link doesn't wrongly re-baseline backup-as-primary.
-    """
+def _query_txt_record(hostname: str, resolver: str, timeout: float) -> str:
+    """Return `hostname`'s TXT record. TXT RDATA is a length-prefixed
+    character-string; the services this is used against return exactly
+    one."""
+    rdata = _dns_query(hostname, resolver, timeout, _QTYPE_TXT)
+    return rdata[1:1 + rdata[0]].decode("ascii", errors="replace")
 
-    def __init__(
-        self,
-        lookup_host: str,
-        resolver: str,
-        timeout: float = 5.0,
-        state_file: str | None = None,
-        max_persisted_age: float = 86400,
-    ):
-        self.lookup_host = lookup_host
-        self.resolver = resolver
-        self.timeout = timeout
-        self.state_file = state_file
-        self.max_persisted_age = max_persisted_age
-        self._baseline_ip: str | None = self._load_baseline() if state_file else None
 
-    def _load_baseline(self) -> str | None:
-        try:
-            with open(self.state_file) as f:
-                data = json.load(f)
-            if time.time() - data["saved_at"] > self.max_persisted_age:
-                return None
-            log.info("link_detector: loaded persisted primary IP %s from %s", data["ip"], self.state_file)
-            return data["ip"]
-        except (FileNotFoundError, KeyError, ValueError, OSError, json.JSONDecodeError):
-            return None
+def _remaining(deadline: float, floor: float = 0.05) -> float:
+    """Seconds left until `deadline` (a `time.monotonic()` timestamp),
+    never less than `floor` -- 0 would put a socket in non-blocking mode
+    instead of giving it a short timeout."""
+    return max(floor, deadline - time.monotonic())
 
-    def _save_baseline(self, ip: str) -> None:
-        if not self.state_file:
-            return
-        try:
-            with open(self.state_file, "w") as f:
-                json.dump({"ip": ip, "saved_at": time.time()}, f)
-        except OSError as e:
-            log.warning("link_detector: failed to persist baseline IP to %s: %s", self.state_file, e)
 
-    def check(self) -> tuple[str, str]:
-        ip = _query_a_record(self.lookup_host, self.resolver, self.timeout)
-        if self._baseline_ip is None:
-            self._baseline_ip = ip
-            log.info("link_detector: baselined primary public IP as %s", ip)
-            self._save_baseline(ip)
-            return PRIMARY, ip
-        return (PRIMARY if ip == self._baseline_ip else BACKUP), ip
+def _query_asn_org_name(ip: str, resolver: str, deadline: float) -> str:
+    """Look up the registered org name for `ip`'s origin AS via Team
+    Cymru's free public IP-to-ASN DNS service: a reverse-IP query for the
+    origin ASN, then a second query for that ASN's registered name. Both
+    queries share the overall `deadline` rather than each getting a full
+    timeout of their own."""
+    reversed_octets = ".".join(reversed(ip.split(".")))
+    origin = _query_txt_record(f"{reversed_octets}.origin.asn.cymru.com", resolver, _remaining(deadline))
+    asn_parts = origin.split("|")[0].split()  # "AS1 AS2 ..." when multi-origin
+    if not asn_parts or not asn_parts[0].isdigit():
+        raise ValueError(f"unexpected origin ASN record for {ip}: {origin!r}")
+    name_record = _query_txt_record(f"AS{asn_parts[0]}.asn.cymru.com", resolver, _remaining(deadline))
+    return name_record.split("|")[-1].strip()
 
 
 def classify_isp(isp_string: str, backup_match: str) -> str:
@@ -180,12 +155,50 @@ def classify_isp(isp_string: str, backup_match: str) -> str:
     return BACKUP if backup_terms and any(term in haystack for term in backup_terms) else PRIMARY
 
 
+def _format_detail(ip: str, isp_string: str) -> str:
+    """Human-readable "ip (isp)" string for dashboard display, gracefully
+    handling either half being empty."""
+    if ip and isp_string:
+        return f"{ip} ({isp_string})"
+    return ip or isp_string
+
+
+class AsnMatchDetector(LinkDetector):
+    """Default lookup mechanism: identifies the ASN/org behind your current
+    public IP via up to three plain DNS queries -- no third-party HTTP call.
+    A query for `lookup_host` sent straight to `resolver` (e.g. OpenDNS's
+    myip.opendns.com special-cases that hostname to echo back the querying
+    source IP) gets the current public IP; the ASN/org behind it (via Team
+    Cymru's free public IP-to-ASN DNS service) is cached and only re-looked-up
+    when that IP actually changes. All queries in a single check share one
+    overall `timeout` budget rather than each getting a full timeout of
+    their own.
+    """
+
+    def __init__(self, lookup_host: str, resolver: str, backup_match: str, timeout: float = 5.0):
+        self.lookup_host = lookup_host
+        self.resolver = resolver
+        self.backup_match = backup_match
+        self.timeout = timeout
+        self._cached_ip: str | None = None
+        self._cached_org_name = ""
+
+    def check(self) -> tuple[str, str]:
+        deadline = time.monotonic() + self.timeout
+        ip = _query_a_record(self.lookup_host, self.resolver, _remaining(deadline))
+        if ip != self._cached_ip:
+            self._cached_org_name = _query_asn_org_name(ip, self.resolver, deadline)
+            self._cached_ip = ip
+        return classify_isp(self._cached_org_name, self.backup_match), _format_detail(ip, self._cached_org_name)
+
+
 class IspMatchDetector(LinkDetector):
-    """Opt-in: calls a configurable IP-info HTTP endpoint and classifies the
-    returned ISP/org name against a configured backup substring. Unlike
-    DnsBaselineDetector, this sends the router's public IP to a third-party
-    HTTP service on every check -- only used when the user explicitly sets
-    BACKUP_ISP_MATCH."""
+    """Opt-in alternative to the default AsnMatchDetector: calls a
+    configurable IP-info HTTP endpoint and classifies the returned ISP/org
+    name against a configured backup substring. Sends the router's public
+    IP to that third-party HTTP service on every check -- only used when
+    the user explicitly sets IP_LOOKUP_URL (e.g. if Team Cymru's DNS
+    service is ever unavailable, or a specific HTTP provider is wanted)."""
 
     def __init__(self, lookup_url: str, backup_match: str, timeout: float = 5.0):
         self.lookup_url = lookup_url
@@ -199,8 +212,7 @@ class IspMatchDetector(LinkDetector):
         data = resp.json()
         isp_string = " ".join(v for k in ("isp", "org", "as") if (v := str(data.get(k, "")).strip()))
         ip = str(data.get("query", "")).strip()
-        detail = f"{ip} ({isp_string})" if ip and isp_string else (ip or isp_string)
-        return classify_isp(isp_string, self.backup_match), detail
+        return classify_isp(isp_string, self.backup_match), _format_detail(ip, isp_string)
 
 
 class LinkStateTracker:
@@ -264,11 +276,14 @@ def build_link_detector(env: dict) -> LinkDetector:
     if kind != "public_ip":
         raise ValueError(f"unknown LINK_DETECTOR: {kind!r} (expected 'none' or 'public_ip')")
 
-    backup_match = env.get("BACKUP_ISP_MATCH", "")
-    if backup_match:
-        lookup_url = env.get("IP_LOOKUP_URL", "http://ip-api.com/json/?fields=isp,org,as,query")
+    backup_match = env.get("BACKUP_ISP_MATCH", "").strip()
+    if not backup_match:
+        raise ValueError("BACKUP_ISP_MATCH must be set when LINK_DETECTOR=public_ip")
+
+    lookup_url = env.get("IP_LOOKUP_URL", "").strip()
+    if lookup_url:
         return IspMatchDetector(lookup_url, backup_match)
 
     lookup_host = env.get("DNS_LOOKUP_HOST", "myip.opendns.com")
     resolver = env.get("DNS_RESOLVER", "208.67.222.222")
-    return DnsBaselineDetector(lookup_host, resolver, state_file="/app/state/baseline_ip.json")
+    return AsnMatchDetector(lookup_host, resolver, backup_match)

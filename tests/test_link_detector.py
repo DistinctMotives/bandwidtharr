@@ -1,11 +1,13 @@
-import json
-import time
+import pytest
 
 from bandwidtharr.link_detector import (
     BACKUP,
     PRIMARY,
-    DnsBaselineDetector,
+    AsnMatchDetector,
+    IspMatchDetector,
     LinkStateTracker,
+    NullDetector,
+    build_link_detector,
     classify_isp,
     next_link_check_decision,
 )
@@ -99,30 +101,33 @@ def test_next_link_check_not_pulled_forward_while_still_idle():
     assert due is False
 
 
-def test_dns_baseline_detector_persists_and_reloads(tmp_path):
-    state_file = str(tmp_path / "baseline.json")
-    first = DnsBaselineDetector("host", "resolver", state_file=state_file)
-    first._save_baseline("1.2.3.4")
-
-    second = DnsBaselineDetector("host", "resolver", state_file=state_file)
-    assert second._baseline_ip == "1.2.3.4"
+def test_build_link_detector_none_by_default():
+    assert isinstance(build_link_detector({}), NullDetector)
 
 
-def test_dns_baseline_detector_ignores_stale_persisted_file(tmp_path):
-    state_file = tmp_path / "baseline.json"
-    state_file.write_text(json.dumps({"ip": "9.9.9.9", "saved_at": time.time() - 999_999}))
-
-    detector = DnsBaselineDetector("host", "resolver", state_file=str(state_file), max_persisted_age=86400)
-    assert detector._baseline_ip is None
+def test_build_link_detector_explicit_none():
+    assert isinstance(build_link_detector({"LINK_DETECTOR": "none"}), NullDetector)
 
 
-def test_dns_baseline_detector_no_state_file_is_pure_in_memory():
-    detector = DnsBaselineDetector("host", "resolver")
-    assert detector._baseline_ip is None
-    assert detector.state_file is None
+def test_build_link_detector_unknown_kind_raises():
+    with pytest.raises(ValueError):
+        build_link_detector({"LINK_DETECTOR": "bogus"})
 
 
-def test_dns_baseline_detector_missing_file_starts_fresh(tmp_path):
-    state_file = str(tmp_path / "does_not_exist.json")
-    detector = DnsBaselineDetector("host", "resolver", state_file=state_file)
-    assert detector._baseline_ip is None
+def test_build_link_detector_requires_backup_isp_match():
+    with pytest.raises(ValueError):
+        build_link_detector({"LINK_DETECTOR": "public_ip"})
+
+
+def test_build_link_detector_defaults_to_asn_match():
+    detector = build_link_detector({"LINK_DETECTOR": "public_ip", "BACKUP_ISP_MATCH": "Starlink"})
+    assert isinstance(detector, AsnMatchDetector)
+
+
+def test_build_link_detector_ip_lookup_url_opts_into_http():
+    detector = build_link_detector({
+        "LINK_DETECTOR": "public_ip",
+        "BACKUP_ISP_MATCH": "Starlink",
+        "IP_LOOKUP_URL": "http://example.com/lookup",
+    })
+    assert isinstance(detector, IspMatchDetector)
