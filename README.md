@@ -105,57 +105,59 @@ services:
 If your router fails over to a backup link (Starlink, 5G, a cellular
 hotspot...) the fixed `TOTAL_LIMIT_MBPS` budget is usually way too high for
 that link, so bandwidtharr can optionally detect the failover and swap in a
-separate `BACKUP_TOTAL_LIMIT_MBPS` while it's active. This works with any
-router, regardless of vendor, since it detects the failover from the outside,
-by noticing that your public egress path changed, not by talking to your
-router.
+separate, lower `BACKUP_TOTAL_LIMIT_MBPS` while it's active. It works with
+any router regardless of vendor, since it detects the failover from the
+outside -- noticing that your public egress path changed -- rather than
+talking to your router.
 
-Off by default. Set `LINK_DETECTOR=public_ip`, `BACKUP_TOTAL_LIMIT_MBPS`,
-and `BACKUP_ISP_MATCH` (comma-separated, case-insensitive substrings
-identifying your backup link's ISP/org/AS name, e.g.
-`BACKUP_ISP_MATCH=Starlink,SpaceX`) to turn it on -- all three are required
-together. `BACKUP_ISP_MATCH` classifies primary vs. backup directly by
-who's actually serving your traffic, rather than inferring it from "did the
-IP change": correct from the very first check regardless of which link is
-active when bandwidtharr starts, and unaffected by your primary ISP simply
-rotating its own dynamic IP. If the lookup ever returns something
-unrecognized (a hiccup, an outage), it fails toward primary -- i.e. toward
-*not* throttling -- rather than toward backup.
-
-The lookup itself is three plain DNS queries against [Team Cymru's free
-public IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) (one
-to learn your current public IP, two more for the ASN/org name behind it)
--- no third-party HTTP call at all.
-
-Don't guess the match value -- query it directly for any IP (yours, or a
-link you're not currently on) the same way bandwidtharr does -- reverse-IP
-query for the origin ASN, then a query for that ASN's registered name:
+Off by default. Three variables turn it on, all required together:
 
 ```sh
-ip=1.2.3.4; asn=$(dig +short TXT $(echo $ip | awk -F. '{print $4"."$3"."$2"."$1}').origin.asn.cymru.com | cut -d'|' -f1 | tr -d ' "'); dig +short TXT AS$asn.asn.cymru.com
+LINK_DETECTOR=public_ip
+BACKUP_TOTAL_LIMIT_MBPS=50
+BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 ```
 
-The last `|`-separated field of the output is the org name -- pull your
-match terms from there. For example, run against a real Starlink IP this
-prints `"14593 | US | arin | 2018-09-05 | SPACEX-STARLINK - Space
-Exploration Technologies Corporation, US"`, so the match terms would be
-`BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration` -- multiple
-comma-separated words pulled from that field, not the whole string
-verbatim, so a minor wording change (punctuation, a suffix like ", US")
-doesn't silently break the match.
+### Example: finding your `BACKUP_ISP_MATCH` value
 
-Once bandwidtharr is actually running, `docker logs` is the ground truth --
-setting `LOG_LEVEL=DEBUG` shows the detected string on *every* check,
-rather than only when a switch actually happens.
+Don't guess it -- query it directly for your backup link's IP the same way
+bandwidtharr does, before you even turn the feature on:
 
-Every confirmed switch (in both directions) is logged at `INFO`
-and shown live on the dashboard, which displays the current link state,
-whether it's currently treating traffic as downloading or idle, when it was
-last/next checked, and a rolling log (last 50 events) of recent
-failover/failback events with timestamps -- persisted to the
-`bandwidtharr_state` volume, so it survives restarts and updates. The
-detected IP/ISP itself is never sent to the browser -- it's only ever
-logged server-side (`docker logs`).
+```sh
+$ ip=188.92.250.182; asn=$(dig +short TXT $(echo $ip | awk -F. '{print $4"."$3"."$2"."$1}').origin.asn.cymru.com | cut -d'|' -f1 | tr -d ' "'); dig +short TXT AS$asn.asn.cymru.com
+"14593 | US | arin | 2018-09-05 | SPACEX-STARLINK - Space Exploration Technologies Corporation, US"
+```
+
+The last `|`-separated field is the org name -- pull a few distinctive
+words from it, not the whole string verbatim (so a minor wording change
+later, like a dropped ", US" suffix, doesn't silently break the match):
+
+```sh
+BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
+```
+
+### How it works
+
+- **Lookup:** three plain DNS queries against [Team Cymru's free public
+  IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) -- one to
+  learn your current public IP, two more for the ASN/org name behind it.
+  No third-party HTTP call.
+- **Classification:** `BACKUP_ISP_MATCH` matches directly against who's
+  actually serving your traffic, so it's correct from the very first check
+  regardless of which link is active when bandwidtharr starts, and
+  unaffected by your primary ISP rotating its own dynamic IP.
+- **Fail-safe:** an unrecognized result (a hiccup, an outage) is treated as
+  primary -- i.e. it fails toward *not* throttling, never toward backup.
+- **Debounce:** `LINK_FAILOVER_CONFIRM_COUNT` consecutive matching checks
+  are required before a switch actually happens, so a single transient
+  blip can't flap the budget.
+- **Visibility:** every confirmed switch is logged at `INFO`; set
+  `LOG_LEVEL=DEBUG` to see the detected string on *every* check instead,
+  useful for finding your match value without waiting for a real failover.
+  The dashboard shows live link state and a rolling log (last 50 events)
+  of failover/recovery events, persisted to the `bandwidtharr_state`
+  volume so it survives restarts. The detected IP/ISP itself is never sent
+  to the browser -- only ever logged server-side (`docker logs`).
 
 ## Development
 
