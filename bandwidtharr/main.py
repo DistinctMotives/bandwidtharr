@@ -36,7 +36,7 @@ def main() -> None:
     )
     link_check_interval = float(os.environ.get("LINK_CHECK_INTERVAL_SECONDS", "30"))
     link_check_idle_interval = float(os.environ.get("LINK_CHECK_IDLE_INTERVAL_SECONDS", "300"))
-    link_check_min_speed = mbps_to_bytes(float(os.environ.get("LINK_CHECK_MIN_SPEED_MBPS", "0")))
+    link_check_min_speed = mbps_to_bytes(float(os.environ.get("LINK_CHECK_MIN_SPEED_MBPS", "5")))
     link_confirm_count = int(os.environ.get("LINK_FAILOVER_CONFIRM_COUNT", "2"))
     link_detector = build_link_detector(os.environ)
     link_tracker = LinkStateTracker(confirm_count=link_confirm_count)
