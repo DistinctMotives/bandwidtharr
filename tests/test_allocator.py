@@ -1,4 +1,4 @@
-from bandwidtharr.allocator import OvershootCompensator, allocate
+from bandwidtharr.allocator import Arbitrator, OvershootCompensator, allocate
 
 TOTAL = 100_000_000.0  # 100 MB/s ~ 800 Mbps
 ACTIVE = 250_000.0
@@ -98,26 +98,32 @@ def test_result_never_exceeds_total_when_both_are_active():
             assert qbit_limit + sab_limit <= TOTAL + 1  # rounding slack
 
 
-def _run_loop(qbit_speed, sab_speed, qbit_true_max, sab_true_max, cycles, jump_at=None, jump_to=None):
-    """Simulate main.py's poll loop: call allocate(), apply the result when
-    `saturating` bypasses the hysteresis gate (or the change clears it
-    normally), then let each app's next measured speed track whatever was
-    actually applied, capped at its modeled true ceiling."""
-    change_threshold_fraction = 0.05
-    qbit_limit = sab_limit = TOTAL
+def _run_loop(
+    qbit_speed, sab_speed, qbit_true_max, sab_true_max, cycles,
+    jump_at=None, jump_to=None, link_changed_at=None,
+    settle_seconds=30.0, poll_interval=3.0,
+):
+    """Drive the real Arbitrator (not a hand-copied mirror of main.py's
+    logic) through `cycles` simulated poll cycles, letting each app's next
+    measured speed track whatever was actually applied, capped at its
+    modeled true ceiling."""
+    arbitrator = Arbitrator(TOTAL)
+    now = 0.0
     for cycle in range(1, cycles + 1):
         if jump_at and cycle == jump_at:
             qbit_true_max = jump_to
-        new_qbit, new_sab, saturating = allocate(
-            qbit_speed, sab_speed, qbit_limit, sab_limit, TOTAL, ACTIVE,
+        link_changed = link_changed_at is not None and cycle == link_changed_at
+        new_qbit, qbit_apply, new_sab, sab_apply, _penalty = arbitrator.step(
+            now, qbit_speed, sab_speed, TOTAL, ACTIVE, settle_seconds, link_changed,
         )
-        if saturating or abs(new_qbit - qbit_limit) >= TOTAL * change_threshold_fraction:
-            qbit_limit = new_qbit
-        if saturating or abs(new_sab - sab_limit) >= TOTAL * change_threshold_fraction:
-            sab_limit = new_sab
-        qbit_speed = min(qbit_true_max, qbit_limit)
-        sab_speed = min(sab_true_max, sab_limit)
-    return qbit_limit, sab_limit
+        if qbit_apply:
+            arbitrator.qbit_limit = new_qbit
+        if sab_apply:
+            arbitrator.sab_limit = new_sab
+        qbit_speed = min(qbit_true_max, arbitrator.qbit_limit)
+        sab_speed = min(sab_true_max, arbitrator.sab_limit)
+        now += poll_interval
+    return arbitrator.qbit_limit, arbitrator.sab_limit
 
 
 def test_both_genuinely_hungry_converges_to_balanced_split_not_runaway_skew():
@@ -131,7 +137,7 @@ def test_both_genuinely_hungry_converges_to_balanced_split_not_runaway_skew():
     # reach the full 800 Mbps when given room -- modeled here the same way.
     qbit_limit, sab_limit = _run_loop(
         qbit_speed=TOTAL * 0.06, sab_speed=TOTAL * 0.90,
-        qbit_true_max=TOTAL, sab_true_max=TOTAL, cycles=30,
+        qbit_true_max=TOTAL, sab_true_max=TOTAL, cycles=90,
     )
     assert abs(qbit_limit - sab_limit) <= TOTAL * 0.05
 
@@ -157,10 +163,65 @@ def test_recovers_when_previously_slack_app_becomes_hungry_again():
     # more torrent peers connect) -- it climbs back to a fair share.
     qbit_limit, sab_limit = _run_loop(
         qbit_speed=TOTAL * 0.02, sab_speed=TOTAL,
-        qbit_true_max=TOTAL * 0.15, sab_true_max=TOTAL, cycles=60,
+        qbit_true_max=TOTAL * 0.15, sab_true_max=TOTAL, cycles=250,
         jump_at=31, jump_to=TOTAL,
     )
     assert abs(qbit_limit - sab_limit) <= TOTAL * 0.05
+
+
+def test_arbitrator_link_changed_resets_fair_share_to_new_total_half():
+    # Regression test for a real bug: without this reset, recovering from a
+    # converged split on a small budget to a much larger total made
+    # allocate()'s defensive clamp (relative to the NEW total) force a
+    # spurious jump completely disconnected from actual demand -- e.g.
+    # recovering from 25/25 on a 50 Mbps backup link to an 800 Mbps primary
+    # forced qbit up to 80 Mbps immediately, purely because 25 fell below
+    # 10% of the new total, not because of any fairness decision.
+    arbitrator = Arbitrator(TOTAL)
+    arbitrator.qbit_fair_share = 25_000_000.0
+    arbitrator.qbit_limit = 25_000_000.0
+    arbitrator.sab_limit = 25_000_000.0
+
+    new_qbit, qbit_apply, new_sab, sab_apply, _penalty = arbitrator.step(
+        now=1_000.0, qbit_speed=25_000_000.0, sab_speed=25_000_000.0,
+        total=TOTAL, active_threshold=ACTIVE, reallocation_settle_seconds=30.0,
+        link_changed=True,
+    )
+    assert new_qbit == round(TOTAL / 2)
+    assert new_sab == round(TOTAL / 2)
+    assert qbit_apply
+    assert sab_apply
+
+
+def test_arbitrator_recovers_from_backup_to_primary_immediately():
+    # End-to-end regression test for the same bug, driven through the full
+    # loop helper: converge on a small backup budget, then swap back to the
+    # large primary total -- should reach a fair split on the recovery
+    # cycle itself, not several minutes later.
+    qbit_limit, sab_limit = _run_loop(
+        qbit_speed=TOTAL * 0.5, sab_speed=TOTAL * 0.5,
+        qbit_true_max=TOTAL, sab_true_max=TOTAL, cycles=2,
+    )
+    # (both genuinely hungry on primary; now fail over to a tiny backup budget)
+    backup_total = TOTAL * 0.0625  # e.g. 50 of 800 Mbps
+    arbitrator = Arbitrator(TOTAL)
+    arbitrator.qbit_fair_share = qbit_limit
+    arbitrator.qbit_limit = qbit_limit
+    arbitrator.sab_limit = sab_limit
+    now = 0.0
+    new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
+        now, TOTAL * 0.5, TOTAL * 0.5, backup_total, ACTIVE, 30.0, link_changed=True,
+    )
+    arbitrator.qbit_limit, arbitrator.sab_limit = new_qbit, new_sab
+    assert new_qbit == new_sab == round(backup_total / 2)
+
+    # recover back to primary
+    now += 3.0
+    new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
+        now, new_qbit, new_sab, TOTAL, ACTIVE, 30.0, link_changed=True,
+    )
+    assert new_qbit == new_sab == round(TOTAL / 2)
+    assert qbit_apply and sab_apply
 
 
 def test_slack_shrink_still_works_on_a_small_backup_budget():

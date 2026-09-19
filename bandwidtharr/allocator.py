@@ -156,3 +156,85 @@ class OvershootCompensator:
             self.penalty = max(0.0, self.penalty - effective_total * self.DECAY_FRACTION)
 
         return self.penalty
+
+
+class Arbitrator:
+    """Bundles allocate() + OvershootCompensator + the settle-timer gate
+    into the one per-cycle arbitration decision main.py's poll loop needs,
+    so it can be driven directly by a test (including realistic,
+    fluctuating simulations) without faking any I/O.
+
+    qbit_limit/sab_limit are the values actually applied via each app's
+    API -- set them directly after a successful set_download_limit() call;
+    step() never touches them itself, only recommends new values, so a
+    failed API call correctly leaves the tracked "currently applied"
+    value unchanged. qbit_fair_share is allocate()'s own bookkeeping
+    (untouched by the overshoot penalty, so the penalty never distorts
+    next cycle's fairness classification or midpoint calculation) and IS
+    updated internally by step().
+    """
+
+    def __init__(self, total: float):
+        self.qbit_fair_share = total
+        self.qbit_limit = total
+        self.sab_limit = total
+        self.last_reallocation_at = 0.0
+        self.overshoot_compensator = OvershootCompensator()
+        self._first_cycle = True
+
+    def step(
+        self,
+        now: float,
+        qbit_speed: float,
+        sab_speed: float,
+        total: float,
+        active_threshold: float,
+        reallocation_settle_seconds: float,
+        link_changed: bool,
+    ) -> tuple[float, bool, float, bool, float]:
+        """Call once per poll cycle. Returns (new_qbit_limit,
+        qbit_should_apply, new_sab_limit, sab_should_apply,
+        overshoot_penalty)."""
+        first_cycle, self._first_cycle = self._first_cycle, False
+        previous_sab_limit = self.sab_limit  # what's actually applied right now, before any reset below
+
+        if link_changed:
+            # A WAN failover budget swap invalidates any existing share as
+            # a fraction of the OLD total -- reset to a neutral baseline on
+            # the new one, same as allocate()'s own first-both-active
+            # reset. Without this, allocate()'s defensive floor/ceiling
+            # clamp (relative to the NEW total) can force a spurious jump
+            # completely disconnected from actual demand, e.g. recovering
+            # from a converged 25/25 split on a 50 Mbps backup link to an
+            # 800 Mbps primary would otherwise force qbit up to 80 Mbps
+            # immediately (10% of the new total), purely because 25 fell
+            # below that floor -- not because of any fairness decision.
+            self.qbit_fair_share = self.sab_limit = total / 2
+
+        new_qbit_fair_share, new_sab_limit, saturating = allocate(
+            qbit_speed, sab_speed, self.qbit_fair_share, self.sab_limit, total, active_threshold,
+        )
+        fairness_allowed = (
+            first_cycle or link_changed
+            or now - self.last_reallocation_at >= reallocation_settle_seconds
+        )
+        fairness_changed = new_qbit_fair_share != self.qbit_fair_share or new_sab_limit != self.sab_limit
+
+        overshoot_penalty = self.overshoot_compensator.update(qbit_speed + sab_speed, total)
+        new_qbit_limit = new_qbit_fair_share
+        if overshoot_penalty > 0:
+            new_qbit_limit = max(total * MIN_SHARE_FRACTION, new_qbit_fair_share - overshoot_penalty)
+
+        # link_changed always applies fresh values to both sides -- the old
+        # applied values are stale/meaningless against the new total
+        # regardless of whether either happens to numerically match (the
+        # sab_limit reset above would otherwise make that comparison miss a
+        # coincidental match against its own just-reset value).
+        qbit_should_apply = link_changed or overshoot_penalty > 0 or (fairness_allowed and new_qbit_limit != self.qbit_limit)
+        sab_should_apply = link_changed or (fairness_allowed and new_sab_limit != previous_sab_limit)
+
+        if fairness_changed and fairness_allowed:
+            self.qbit_fair_share = new_qbit_fair_share
+            self.last_reallocation_at = now
+
+        return new_qbit_limit, qbit_should_apply, new_sab_limit, sab_should_apply, overshoot_penalty

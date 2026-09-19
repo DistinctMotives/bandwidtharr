@@ -3,7 +3,7 @@ import os
 import time
 
 from bandwidtharr import webserver
-from bandwidtharr.allocator import MIN_SHARE_FRACTION, OvershootCompensator, allocate
+from bandwidtharr.allocator import Arbitrator
 from bandwidtharr.link_detector import BACKUP, LinkStateTracker, build_link_detector, next_link_check_decision
 from bandwidtharr.qbittorrent import QBittorrentClient
 from bandwidtharr.sabnzbd import SabnzbdClient
@@ -59,8 +59,6 @@ def main() -> None:
     link_confirm_count = int(os.environ.get("LINK_FAILOVER_CONFIRM_COUNT", "2"))
     link_detector = build_link_detector(os.environ)
     link_tracker = LinkStateTracker(confirm_count=link_confirm_count)
-    overshoot_compensator = OvershootCompensator()
-    last_reallocation_at = 0.0
     next_link_check = 0.0
     link_ok = True
     link_error = None
@@ -87,9 +85,7 @@ def main() -> None:
     web_port = int(os.environ.get("WEB_PORT", "80"))
     webserver.start(state, web_port)
 
-    qbit_fair_share = total  # allocate()'s own bookkeeping, untouched by overshoot correction
-    qbit_limit = total  # what's actually applied to qBittorrent's API (fair share minus overshoot penalty)
-    sab_limit = total
+    arbitrator = Arbitrator(total)
 
     log.info(
         "starting: total=%.0fMbps poll=%ss web_port=%s link_detector=%s%s%s",
@@ -99,7 +95,6 @@ def main() -> None:
         f" qbit_upload_limit={qbit_upload_limit * 8 / 1_000_000:.0f}Mbps" if qbit_upload_limit else "",
     )
 
-    first_cycle = True
     while True:
         qbit_ok, sab_ok = True, True
         qbit_error, sab_error = None, None
@@ -192,80 +187,49 @@ def main() -> None:
                     if should_log_repeated_failure(qbit_upload_fail_count):
                         log.warning("failed to set qbit upload limit (%dx): %s", qbit_upload_fail_count, e)
 
-        # Only arbitrate once both are reachable -- allocate() needs both
+        # Only arbitrate once both are reachable -- Arbitrator needs both
         # sides' real speed to mean anything, and there's nothing useful to
         # do with just one.
         if qbit_ok and sab_ok:
-            new_qbit_fair_share, new_sab_limit, saturating = allocate(
+            new_qbit_limit, qbit_should_apply, new_sab_limit, sab_should_apply, overshoot_penalty = arbitrator.step(
+                now=now,
                 qbit_speed=qbit_speed,
                 sab_speed=sab_speed,
-                qbit_limit=qbit_fair_share,
-                sab_limit=sab_limit,
                 total=effective_total,
                 active_threshold=active_threshold,
+                reallocation_settle_seconds=reallocation_settle_seconds,
+                link_changed=link_changed,
             )
 
-            # Don't act on every single fairness-driven nudge the instant
-            # it's computed -- give qBittorrent/SABnzbd time to actually
-            # settle into a newly-assigned share before judging them again,
-            # rather than re-adjusting every poll cycle. first_cycle and a
-            # WAN failover budget swap still apply immediately, since those
-            # are discrete, urgent events, not gradual fairness-tuning.
-            fairness_allowed = (
-                first_cycle or link_changed
-                or now - last_reallocation_at >= reallocation_settle_seconds
-            )
-            fairness_changed = new_qbit_fair_share != qbit_fair_share or new_sab_limit != sab_limit
-
-            # See OvershootCompensator's docstring for why qBittorrent
-            # specifically needs this. Always applies immediately, never
-            # gated by the settle timer above -- staying under budget
-            # matters more than how quickly unused headroom gets reclaimed
-            # and handed to the other app. Derived from qbit_fair_share (not
-            # fed back into allocate() itself) so the overshoot fudge never
-            # distorts next cycle's fairness classification or midpoint
-            # calculation -- the two corrections stay independent instead of
-            # compounding each other.
-            overshoot_penalty = overshoot_compensator.update(combined_speed, effective_total)
-            new_qbit_limit = new_qbit_fair_share
-            if overshoot_penalty > 0:
-                new_qbit_limit = max(effective_total * MIN_SHARE_FRACTION, new_qbit_fair_share - overshoot_penalty)
-
-            if overshoot_penalty > 0 or (fairness_allowed and new_qbit_limit != qbit_limit):
+            if qbit_should_apply:
                 try:
                     qbit.set_download_limit(int(new_qbit_limit))
                     log.info(
                         "qbit limit %.0f -> %.0f Mbps%s",
-                        qbit_limit * 8 / 1_000_000, new_qbit_limit * 8 / 1_000_000,
+                        arbitrator.qbit_limit * 8 / 1_000_000, new_qbit_limit * 8 / 1_000_000,
                         f" (overshoot -{overshoot_penalty * 8 / 1_000_000:.0f}Mbps)" if overshoot_penalty > 0 else "",
                     )
-                    qbit_limit = new_qbit_limit
+                    arbitrator.qbit_limit = new_qbit_limit
                 except Exception as e:
                     qbit_ok = False
                     qbit_error = str(e)
                     log.warning("failed to set qbit limit: %s", e)
 
-            if fairness_allowed and new_sab_limit != sab_limit:
+            if sab_should_apply:
                 try:
                     sab.set_download_limit(int(new_sab_limit))
                     log.info(
                         "sab limit %.0f -> %.0f Mbps",
-                        sab_limit * 8 / 1_000_000, new_sab_limit * 8 / 1_000_000,
+                        arbitrator.sab_limit * 8 / 1_000_000, new_sab_limit * 8 / 1_000_000,
                     )
-                    sab_limit = new_sab_limit
+                    arbitrator.sab_limit = new_sab_limit
                 except Exception as e:
                     sab_ok = False
                     sab_error = str(e)
                     log.warning("failed to set sab limit: %s", e)
 
-            if fairness_changed and fairness_allowed:
-                qbit_fair_share = new_qbit_fair_share
-                last_reallocation_at = now
-
-            first_cycle = False
-
         state.update(
-            effective_total, qbit_speed, qbit_limit, sab_speed, sab_limit,
+            effective_total, qbit_speed, arbitrator.qbit_limit, sab_speed, arbitrator.sab_limit,
             qbit_ok=qbit_ok, sab_ok=sab_ok, qbit_error=qbit_error, sab_error=sab_error,
             link_enabled=link_enabled, active_link=link_tracker.confirmed,
             link_ok=link_ok, link_error=link_error,
@@ -275,8 +239,8 @@ def main() -> None:
 
         log.debug(
             "qbit speed=%.1fMbps limit=%.1fMbps ok=%s | sab speed=%.1fMbps limit=%.1fMbps ok=%s",
-            qbit_speed * 8 / 1_000_000, qbit_limit * 8 / 1_000_000, qbit_ok,
-            sab_speed * 8 / 1_000_000, sab_limit * 8 / 1_000_000, sab_ok,
+            qbit_speed * 8 / 1_000_000, arbitrator.qbit_limit * 8 / 1_000_000, qbit_ok,
+            sab_speed * 8 / 1_000_000, arbitrator.sab_limit * 8 / 1_000_000, sab_ok,
         )
 
         time.sleep(poll_interval)
