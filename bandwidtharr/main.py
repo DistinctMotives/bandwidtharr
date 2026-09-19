@@ -35,6 +35,8 @@ def main() -> None:
         else None
     )
     link_check_interval = float(os.environ.get("LINK_CHECK_INTERVAL_SECONDS", "30"))
+    link_check_idle_interval = float(os.environ.get("LINK_CHECK_IDLE_INTERVAL_SECONDS", "300"))
+    link_check_min_speed = mbps_to_bytes(float(os.environ.get("LINK_CHECK_MIN_SPEED_MBPS", "0")))
     link_confirm_count = int(os.environ.get("LINK_FAILOVER_CONFIRM_COUNT", "2"))
     link_detector = build_link_detector(os.environ)
     link_tracker = LinkStateTracker(confirm_count=link_confirm_count)
@@ -76,6 +78,20 @@ def main() -> None:
         qbit_speed, sab_speed = 0.0, 0.0
         link_changed = False
 
+        try:
+            qbit_speed = qbit.get_download_speed()
+        except Exception as e:
+            qbit_ok = False
+            qbit_error = str(e)
+            log.warning("qbit unreachable: %s", e)
+
+        try:
+            sab_speed = sab.get_download_speed()
+        except Exception as e:
+            sab_ok = False
+            sab_error = str(e)
+            log.warning("sab unreachable: %s", e)
+
         now = time.time()
         if now >= next_link_check:
             try:
@@ -97,23 +113,15 @@ def main() -> None:
                 link_ok = False
                 link_error = str(e)
                 log.warning("link detector check failed: %s", e)
-            next_link_check = now + link_check_interval
+            # Idle traffic falls back to a coarser cadence so bandwidtharr
+            # isn't making DNS/HTTP calls purely to watch nothing happen, but
+            # status still refreshes on its own rather than going stale
+            # indefinitely -- see LINK_CHECK_IDLE_INTERVAL_SECONDS.
+            combined_speed = qbit_speed + sab_speed
+            interval = link_check_interval if combined_speed >= link_check_min_speed else link_check_idle_interval
+            next_link_check = now + interval
 
         effective_total = backup_total if link_tracker.confirmed == BACKUP else total
-
-        try:
-            qbit_speed = qbit.get_download_speed()
-        except Exception as e:
-            qbit_ok = False
-            qbit_error = str(e)
-            log.warning("qbit unreachable: %s", e)
-
-        try:
-            sab_speed = sab.get_download_speed()
-        except Exception as e:
-            sab_ok = False
-            sab_error = str(e)
-            log.warning("sab unreachable: %s", e)
 
         # Only arbitrate once both are reachable -- allocate() needs both
         # sides' real speed to mean anything, and there's nothing useful to

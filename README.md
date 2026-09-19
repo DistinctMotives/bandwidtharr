@@ -70,7 +70,9 @@ All configuration is via `.env` (see `.env.example`):
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
 | `LINK_DETECTOR`               | `none` or `public_ip` -- see [WAN failover detection](#wan-failover-detection)    | `none` |
 | `BACKUP_TOTAL_LIMIT_MBPS`     | Budget to use while on the backup link (required if `LINK_DETECTOR` is set)  | *(none)* |
-| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active                                | `30` |
+| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` | `30` |
+| `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `300` |
+| `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `0` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
 | `PRIMARY_ISP_MATCH` / `BACKUP_ISP_MATCH` | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
 | `IP_LOOKUP_URL`               | IP-info endpoint used by ISP-name matching                              | `http://ip-api.com/json/?fields=isp,org,as` |
