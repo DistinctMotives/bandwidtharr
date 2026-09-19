@@ -75,7 +75,7 @@ All configuration is via `.env` (see `.env.example`):
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Combined qbit+sab speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `0` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before actually switching budgets  | `2` |
 | `PRIMARY_ISP_MATCH` / `BACKUP_ISP_MATCH` | Optional ISP-name substrings (comma-separated) -- switches to the ISP-lookup detector mode | *(blank)* |
-| `IP_LOOKUP_URL`               | IP-info endpoint used by ISP-name matching                              | `http://ip-api.com/json/?fields=isp,org,as` |
+| `IP_LOOKUP_URL`               | IP-info endpoint used by ISP-name matching                              | `http://ip-api.com/json/?fields=isp,org,as,query` |
 | `DNS_LOOKUP_HOST` / `DNS_RESOLVER` | Hostname/resolver used by the default DNS-only IP-baseline check    | `myip.opendns.com` / `208.67.222.222` |
 
 ## Web dashboard
