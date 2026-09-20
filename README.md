@@ -157,6 +157,17 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
   volume so it survives restarts. The detected IP/ISP itself is never sent
   to the browser -- only ever logged server-side (`docker logs`).
 
+### Slack notifications (optional)
+
+Set `SLACK_WEBHOOK_URL` to an [Incoming
+Webhook](https://api.slack.com/messaging/webhooks) URL (Slack app
+settings -> Incoming Webhooks) to post a message on every confirmed
+failover/recovery -- blank by default (off). The message only ever
+contains the state transition and budget Mbps values, never the detected
+IP/ISP -- consistent with that never leaving the server either way. A
+failed Slack post is logged as a warning and never affects the actual
+bandwidth arbitration loop.
+
 ### Tuning (optional, defaults shown)
 
 | Variable                      | Meaning | Default |

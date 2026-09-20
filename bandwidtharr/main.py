@@ -7,6 +7,7 @@ from bandwidtharr.allocator import Arbitrator
 from bandwidtharr.link_detector import BACKUP, LinkStateTracker, build_link_detector, next_link_check_decision
 from bandwidtharr.qbittorrent import QBittorrentClient
 from bandwidtharr.sabnzbd import SabnzbdClient
+from bandwidtharr.slack import build_slack_notifier
 from bandwidtharr.state import SharedState
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -59,6 +60,7 @@ def main() -> None:
     link_confirm_count = int(os.environ.get("LINK_FAILOVER_CONFIRM_COUNT", "2"))
     link_detector = build_link_detector(os.environ)
     link_tracker = LinkStateTracker(confirm_count=link_confirm_count)
+    slack_notifier = build_slack_notifier(os.environ)
     next_link_check = 0.0
     link_ok = True
     link_error = None
@@ -148,6 +150,16 @@ def main() -> None:
                         previous_link, confirmed_link, old_total_mbps, new_total_mbps, detail,
                     )
                     link_event = (now, previous_link, confirmed_link, old_total_mbps, new_total_mbps)
+                    if slack_notifier is not None:
+                        try:
+                            slack_notifier.notify(
+                                "bandwidtharr: link %s (%s -> %s, budget %.0f -> %.0f Mbps)" % (
+                                    "failed over" if confirmed_link == BACKUP else "recovered",
+                                    previous_link, confirmed_link, old_total_mbps, new_total_mbps,
+                                )
+                            )
+                        except Exception as e:
+                            log.warning("failed to send Slack notification: %s", e)
             except Exception as e:
                 link_ok = False
                 link_error = str(e)
