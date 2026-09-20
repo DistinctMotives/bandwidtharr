@@ -162,17 +162,17 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 Set `SLACK_WEBHOOK_URL` to an [Incoming
 Webhook](https://api.slack.com/messaging/webhooks) URL (Slack app
 settings -> Incoming Webhooks) to post a message on every confirmed
-failover/recovery -- blank by default (off). The message only ever
-contains the state transition and budget Mbps values, never the detected
-IP/ISP -- consistent with that never leaving the server either way. A
-failed Slack post is logged as a warning and never affects the actual
+failover/recovery -- blank by default (off). The message contains the
+state transition, budget Mbps values, and a UTC timestamp -- never the
+detected IP/ISP, consistent with that never leaving the server either
+way. A failed Slack post is logged as a warning and never affects the actual
 bandwidth arbitration loop.
 
 ### Tuning (optional, defaults shown)
 
 | Variable                      | Meaning | Default |
 |--------------------------------|---------|---------|
-| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` | `30` |
+| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active, while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` or the backup link is currently active | `30` |
 | `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before a switch actually happens | `2` |

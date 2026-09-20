@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from datetime import datetime, timezone
 
 from bandwidtharr import webserver
 from bandwidtharr.allocator import Arbitrator
@@ -126,7 +127,15 @@ def main() -> None:
 
         now = time.time()
         combined_speed = qbit_speed + sab_speed
-        is_active = combined_speed >= link_check_min_speed
+        # Also use the fast cadence whenever currently on the backup link,
+        # regardless of download activity -- otherwise a check made while
+        # idle right as the router fails back can fall onto the slow idle
+        # cadence, and a single transient failure right then (a dropped
+        # DNS query, brief routing flux during the switch itself) plus the
+        # confirm-count's second reading can each independently land on
+        # that same slow cadence -- worst case, tens of minutes before a
+        # "recovered" event ever fires.
+        is_active = combined_speed >= link_check_min_speed or link_tracker.confirmed == BACKUP
         check_due, link_check_interval_to_use = next_link_check_decision(
             now, next_link_check, is_active, link_check_interval, link_check_idle_interval,
         )
@@ -151,15 +160,22 @@ def main() -> None:
                     )
                     link_event = (now, previous_link, confirmed_link, old_total_mbps, new_total_mbps)
                     if slack_notifier is not None:
-                        try:
-                            slack_notifier.notify(
-                                "bandwidtharr: link %s (%s -> %s, budget %.0f -> %.0f Mbps)" % (
-                                    "failed over" if confirmed_link == BACKUP else "recovered",
-                                    previous_link, confirmed_link, old_total_mbps, new_total_mbps,
-                                )
+                        # UTC explicitly, not the container's local time
+                        # (often just whatever the base image defaults to,
+                        # e.g. UTC regardless of where it's hosted) -- avoids
+                        # ambiguity for anyone reading the message regardless
+                        # of their own timezone.
+                        event_time = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                        # notify() sends in a background thread with its own
+                        # retries and never raises, so no try/except needed
+                        # here -- a slow/unreachable Slack API can't block
+                        # this loop.
+                        slack_notifier.notify(
+                            "bandwidtharr: link %s (%s -> %s, budget %.0f -> %.0f Mbps) at %s" % (
+                                "failed over" if confirmed_link == BACKUP else "recovered",
+                                previous_link, confirmed_link, old_total_mbps, new_total_mbps, event_time,
                             )
-                        except Exception as e:
-                            log.warning("failed to send Slack notification: %s", e)
+                        )
             except Exception as e:
                 link_ok = False
                 link_error = str(e)

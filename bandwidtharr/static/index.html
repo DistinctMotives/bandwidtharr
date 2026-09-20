@@ -186,6 +186,7 @@
   .log {
     max-height: 160px;
     overflow-y: auto;
+    overflow-x: auto;
   }
   .log-entry {
     display: flex;
@@ -195,6 +196,7 @@
     font-family: var(--mono);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
   .log-entry:first-child { border-top: none; }
   .log-entry .ts { color: var(--dim); flex-shrink: 0; }
@@ -413,6 +415,15 @@ function updateLink(linkEnabled, activeLink, linkOk, linkError, totalMbps, lastC
   }
 }
 
+function fmtLogTimestamp(ts) {
+  // Fixed-width, locale-independent (unlike toLocaleString()'s varying
+  // length/format) so entries stay predictably sized in the log.
+  const d = new Date(ts * 1000);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
 function updateLinkLog(events) {
   if (!events || !events.length) {
     linkLogEl.innerHTML = '<div class="log-empty">no failovers recorded yet</div>';
@@ -422,7 +433,7 @@ function updateLinkLog(events) {
     const isFailover = current === 'backup';
     const dirClass = isFailover ? 'failover' : 'recovery';
     const dirText = isFailover ? 'failed over' : 'recovered';
-    const time = new Date(ts * 1000).toLocaleTimeString();
+    const time = fmtLogTimestamp(ts);
     return '<div class="log-entry"><span class="ts">' + time + '</span>'
       + '<span class="dir ' + dirClass + '">' + dirText + '</span>'
       + '<span class="transition">' + fmt(oldMbps) + ' → ' + fmt(newMbps) + '</span></div>';
