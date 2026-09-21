@@ -80,7 +80,8 @@ All configuration is via `.env` (see `.env.example`):
 | `LINK_DETECTOR`               | `none` or `public_ip` -- see [WAN failover detection](#wan-failover-detection)    | `none` |
 
 The rest of the WAN-failover variables (`BACKUP_TOTAL_LIMIT_MBPS`,
-`BACKUP_ISP_MATCH`, and tuning knobs) are covered in that section.
+`BACKUP_ISP_MATCH`, `SLACK_WEBHOOK_URL`, and tuning knobs) are covered in
+that section.
 
 ## Web dashboard
 
