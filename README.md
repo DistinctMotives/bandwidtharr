@@ -11,19 +11,17 @@ bandwidth. It watches both apps and gives each one the speed limit it
 actually needs, live, instead of you having to guess at fixed caps for each.
 
 - **Fair, demand-aware sharing** -- a lone downloader gets the whole
-  budget; once both are downloading, they start at an even split, and
-  share only moves from one to the other once it's demonstrably not using
-  what it already has -- not a fixed ratio, and not permanently penalizing
-  an app for a past lull once its demand picks back up. Also compensates
-  automatically if qBittorrent's real throughput keeps exceeding its
-  assigned limit (common with UDP-heavy torrent traffic that's hard to
-  rate-limit precisely), squeezing it further until combined usage comes
-  back within budget.
+  budget; once both are active, they split evenly, and share only shifts
+  from one to the other once it's demonstrably not using what it has --
+  no fixed ratio, no penalizing a past lull. Also compensates if
+  qBittorrent's real throughput keeps exceeding its limit (common with
+  UDP-heavy torrent traffic that's hard to rate-limit precisely),
+  squeezing it further until combined usage is back within budget.
 - **WAN failover detection** *(optional)* -- notices when your router fails
-  over to a backup connection (Starlink, 5G, a hotspot...) and automatically
-  swaps in a lower budget for it, no router integration or vendor-specific
-  setup required. DNS-based ISP matching, with debounce against false
-  positives and state that survives restarts.
+  over to a backup connection (Starlink, 5G, a hotspot...) and swaps in a
+  lower budget automatically, no router integration or vendor-specific
+  setup required. DNS-based ISP matching, debounced against false
+  positives, with state that survives restarts.
 - **Optional qBittorrent upload cap** -- a separate static upload limit, with
   its own lower value to use while on the backup link.
 - **Live dashboard** -- current speed/limit per app, a usage graph against
@@ -73,7 +71,7 @@ All configuration is via `.env` (see `.env.example`):
 | `TOTAL_LIMIT_MBPS`           | Combined download budget to enforce                                    | `800` |
 | `POLL_INTERVAL_SECONDS`      | How often to poll and re-evaluate                                      | `3` |
 | `ACTIVE_THRESHOLD_MBPS`      | Speed above which an app counts as "active" rather than idle           | `2` |
-| `REALLOCATION_SETTLE_SECONDS` | Minimum time between fairness-driven reallocation adjustments, letting qBittorrent/SABnzbd settle into a newly-assigned share before being judged again. Doesn't affect how quickly actual usage is brought back under budget if it overshoots -- only how quickly unused headroom gets reclaimed from one app and handed to the other | `30` |
+| `REALLOCATION_SETTLE_SECONDS` | Minimum time between fairness-driven reallocations, letting each app settle into its new share before being judged again. Doesn't affect overshoot-correction speed -- only how fast unused headroom gets reclaimed and handed to the other app | `30` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
 | `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
 | `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |
@@ -102,12 +100,11 @@ services:
 ## WAN failover detection
 
 If your router fails over to a backup link (Starlink, 5G, a cellular
-hotspot...) the fixed `TOTAL_LIMIT_MBPS` budget is usually way too high for
-that link, so bandwidtharr can optionally detect the failover and swap in a
-separate, lower `BACKUP_TOTAL_LIMIT_MBPS` while it's active. It works with
-any router regardless of vendor, since it detects the failover from the
-outside -- noticing that your public egress path changed -- rather than
-talking to your router.
+hotspot...), the fixed `TOTAL_LIMIT_MBPS` budget is usually too high for it.
+bandwidtharr can detect that and swap in a lower `BACKUP_TOTAL_LIMIT_MBPS`
+while it's active -- works with any router, since it detects the change
+from the outside (your public egress path changing) rather than talking
+to the router itself.
 
 Off by default. Three variables turn it on, all required together:
 
@@ -119,17 +116,17 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 
 ### Example: finding your `BACKUP_ISP_MATCH` value
 
-Don't guess it -- query it directly for your backup link's IP the same way
-bandwidtharr does, before you even turn the feature on:
+Don't guess it -- query it the same way bandwidtharr does, before turning
+the feature on:
 
 ```sh
 $ ip=188.92.250.182; asn=$(dig +short TXT $(echo $ip | awk -F. '{print $4"."$3"."$2"."$1}').origin.asn.cymru.com | cut -d'|' -f1 | tr -d ' "'); dig +short TXT AS$asn.asn.cymru.com
 "14593 | US | arin | 2018-09-05 | SPACEX-STARLINK - Space Exploration Technologies Corporation, US"
 ```
 
-The last `|`-separated field is the org name -- pull a few distinctive
-words from it, not the whole string verbatim (so a minor wording change
-later, like a dropped ", US" suffix, doesn't silently break the match):
+The last `|`-separated field is the org name -- use a few distinctive
+words from it, not the whole string (so a later wording tweak, like a
+dropped ", US" suffix, doesn't break the match):
 
 ```sh
 BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
@@ -141,10 +138,10 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
   IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) -- one to
   learn your current public IP, two more for the ASN/org name behind it.
   No third-party HTTP call.
-- **Classification:** `BACKUP_ISP_MATCH` matches directly against who's
-  actually serving your traffic, so it's correct from the very first check
-  regardless of which link is active when bandwidtharr starts, and
-  unaffected by your primary ISP rotating its own dynamic IP.
+- **Classification:** `BACKUP_ISP_MATCH` matches against who's actually
+  serving your traffic, so it's correct from the first check regardless
+  of which link is active at startup, and unaffected by your primary
+  ISP's dynamic IP rotating.
 - **Fail-safe:** an unrecognized result (a hiccup, an outage) is treated as
   primary -- i.e. it fails toward *not* throttling, never toward backup.
 - **Debounce:** `LINK_FAILOVER_CONFIRM_COUNT` consecutive matching checks
@@ -163,17 +160,17 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 Set `SLACK_WEBHOOK_URL` to an [Incoming
 Webhook](https://api.slack.com/messaging/webhooks) URL (Slack app
 settings -> Incoming Webhooks) to post a message on every confirmed
-failover/recovery -- blank by default (off). The message contains the
-state transition, budget Mbps values, and a UTC timestamp -- never the
-detected IP/ISP, consistent with that never leaving the server either
-way. A failed Slack post is logged as a warning and never affects the actual
-bandwidth arbitration loop.
+failover/recovery -- off by default. The message has the state
+transition, budget Mbps values, and a UTC timestamp -- never the
+detected IP/ISP. Sent in the background with a few retries on failure;
+if it still can't get through, that's only logged as a warning and never
+affects the bandwidth arbitration loop.
 
 ### Tuning (optional, defaults shown)
 
 | Variable                      | Meaning | Default |
 |--------------------------------|---------|---------|
-| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active, while combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` or the backup link is currently active | `30` |
+| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active, whenever combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` or you're on the backup link | `30` |
 | `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
 | `LINK_CHECK_MIN_SPEED_MBPS`   | Speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
 | `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before a switch actually happens | `2` |
