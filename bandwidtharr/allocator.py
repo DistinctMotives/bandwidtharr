@@ -192,6 +192,8 @@ class Arbitrator:
 
     def __init__(self, total: float):
         self.qbit_fair_share = total
+        # Assumed, not known: whatever the apps really have is overwritten
+        # on the first cycle regardless (see step()).
         self.qbit_limit = total
         self.sab_limit = total
         self.last_reallocation_at = 0.0
@@ -288,9 +290,13 @@ class Arbitrator:
         # A rebaseline bypasses the settle gate (via fairness_allowed) but is
         # otherwise an ordinary decision: nothing is re-applied when the new
         # value already matches what the app has -- a no-op set would only
-        # restart the overshoot settle window for nothing.
-        qbit_should_apply = (fairness_allowed and new_qbit_limit != self.qbit_limit) or overshoot_apply
-        sab_should_apply = fairness_allowed and new_sab_limit != self.sab_limit
+        # restart the overshoot settle window for nothing. The first cycle
+        # is the exception: the tracked values start as an assumption (see
+        # __init__), and whatever stale/manual limit an app actually has
+        # must be overwritten even if the decision happens to be "full
+        # budget" -- which it always is while at most one app is active.
+        qbit_should_apply = first_cycle or (fairness_allowed and new_qbit_limit != self.qbit_limit) or overshoot_apply
+        sab_should_apply = first_cycle or (fairness_allowed and new_sab_limit != self.sab_limit)
 
         if qbit_should_apply:
             self.last_qbit_apply_at = now

@@ -290,6 +290,29 @@ def test_overshoot_compensator_penalty_never_exceeds_effective_total():
     assert penalty <= TOTAL
 
 
+def test_first_cycle_applies_even_when_decision_matches_the_assumed_limits():
+    # Regression: the tracked limits start as an assumption (full budget),
+    # and applies only happen when the decision differs from the tracked
+    # value -- so starting up with at most one app active (decision: full
+    # budget for both) never sent anything, leaving a stale manual cap in
+    # the app untouched until BOTH apps became active. The first cycle
+    # must always apply.
+    for qbit_speed, sab_speed in ((0.0, 0.0), (50_000_000.0, 0.0), (0.0, 50_000_000.0)):
+        arbitrator = Arbitrator(TOTAL)
+        new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
+            0.0, qbit_speed, sab_speed, TOTAL, ACTIVE, 30.0, False,
+        )
+        assert new_qbit == new_sab == TOTAL
+        assert qbit_apply and sab_apply, (qbit_speed, sab_speed)
+
+        # ...and only the first: the same decision next cycle is a no-op
+        arbitrator.qbit_limit, arbitrator.sab_limit = new_qbit, new_sab
+        _q, qbit_apply, _s, sab_apply, _p = arbitrator.step(
+            3.0, qbit_speed, sab_speed, TOTAL, ACTIVE, 30.0, False,
+        )
+        assert not qbit_apply and not sab_apply
+
+
 def test_overshoot_correction_is_debounced_not_applied_every_cycle():
     # Regression test: before the overshoot-settle gate, ANY nonzero
     # penalty -- whether still growing or merely decaying -- forced
