@@ -88,10 +88,13 @@ def main() -> None:
     sab_fail_count = 0
     link_fail_count = 0
     qbit_upload_fail_count = 0
+    # Outage timers are monotonic (not wall-clock) so an NTP step -- e.g. the
+    # host booting with a stale clock and syncing minutes later -- can't turn
+    # a 5s blip into a 60s "outage" or defer a real one.
     qbit_unreachable_since = None
     sab_unreachable_since = None
-    last_qbit_handover_limit = None
-    last_sab_handover_limit = None
+    qbit_handover_fail_count = 0
+    sab_handover_fail_count = 0
     pending_link_changed = False
 
     qbit = QBittorrentClient(
@@ -136,7 +139,7 @@ def main() -> None:
             qbit_error = str(e)
             qbit_fail_count += 1
             if qbit_fail_count == 1:
-                qbit_unreachable_since = time.time()
+                qbit_unreachable_since = time.monotonic()
             if should_log_repeated_failure(qbit_fail_count):
                 log.warning("qbit unreachable (%dx): %s", qbit_fail_count, e)
 
@@ -149,11 +152,12 @@ def main() -> None:
             sab_error = str(e)
             sab_fail_count += 1
             if sab_fail_count == 1:
-                sab_unreachable_since = time.time()
+                sab_unreachable_since = time.monotonic()
             if should_log_repeated_failure(sab_fail_count):
                 log.warning("sab unreachable (%dx): %s", sab_fail_count, e)
 
         now = time.time()
+        mono_now = time.monotonic()
         combined_speed = qbit_speed + sab_speed
         # Also use the fast cadence whenever currently on the backup link,
         # regardless of download activity -- otherwise a check made while
@@ -251,40 +255,55 @@ def main() -> None:
         # Peer-outage handover: arbitration only runs when both apps are
         # reachable, so during a long outage of one app's API the surviving
         # app would otherwise sit throttled at a share sized for a two-way
-        # split of a budget nobody is competing for. Deliberately touches
-        # only the app's own applied limit, never the Arbitrator's
-        # bookkeeping: the handover value (full effective budget) is
-        # exactly what allocate() itself assigns while one side is idle, so
-        # the first resumed cycle re-syncs naturally through the existing
-        # paths. Re-checked every cycle, so a mid-outage link flip re-hands
-        # over at the new budget; state clears as soon as both are reachable.
-        if qbit_ok and should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS):
-            if last_qbit_handover_limit != effective_total:
-                try:
-                    qbit.set_download_limit(int(effective_total))
-                    log.info(
-                        "handing qbit full %.0f Mbps budget (sab unreachable > %.0fs)",
-                        effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
-                    )
-                    last_qbit_handover_limit = effective_total
-                except Exception as e:
-                    log.warning("failed to apply qbit handover limit: %s", e)
-        else:
-            last_qbit_handover_limit = None
+        # split of a budget nobody is competing for. The Arbitrator's
+        # tracked applied value is updated too (its documented contract
+        # for any successful set_download_limit()): the peer usually comes
+        # back with its transfers still running at its old limit, and
+        # without the sync the first resumed cycle compares against a
+        # stale value, sees "nothing changed", and leaves the survivor at
+        # the full budget for tens of seconds while the overshoot
+        # compensator squeezes the wrong app. Comparing against the
+        # tracked value also means a mid-outage link flip re-hands over at
+        # the new budget, with no separate handover state to keep in sync.
+        if (
+            qbit_ok
+            and should_hand_out_budget(mono_now, sab_unreachable_since, PEER_HANDOVER_SECONDS)
+            and arbitrator.qbit_limit != effective_total
+        ):
+            try:
+                qbit.set_download_limit(int(effective_total))
+                log.info(
+                    "handing qbit full %.0f Mbps budget (sab unreachable > %.0fs)",
+                    effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
+                )
+                arbitrator.qbit_limit = effective_total
+                qbit_handover_fail_count = 0
+            except Exception as e:
+                qbit_ok = False
+                qbit_error = str(e)
+                qbit_handover_fail_count += 1
+                if should_log_repeated_failure(qbit_handover_fail_count):
+                    log.warning("failed to apply qbit handover limit (%dx): %s", qbit_handover_fail_count, e)
 
-        if sab_ok and should_hand_out_budget(now, qbit_unreachable_since, PEER_HANDOVER_SECONDS):
-            if last_sab_handover_limit != effective_total:
-                try:
-                    sab.set_download_limit(int(effective_total))
-                    log.info(
-                        "handing sab full %.0f Mbps budget (qbit unreachable > %.0fs)",
-                        effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
-                    )
-                    last_sab_handover_limit = effective_total
-                except Exception as e:
-                    log.warning("failed to apply sab handover limit: %s", e)
-        else:
-            last_sab_handover_limit = None
+        if (
+            sab_ok
+            and should_hand_out_budget(mono_now, qbit_unreachable_since, PEER_HANDOVER_SECONDS)
+            and arbitrator.sab_limit != effective_total
+        ):
+            try:
+                sab.set_download_limit(int(effective_total))
+                log.info(
+                    "handing sab full %.0f Mbps budget (qbit unreachable > %.0fs)",
+                    effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
+                )
+                arbitrator.sab_limit = effective_total
+                sab_handover_fail_count = 0
+            except Exception as e:
+                sab_ok = False
+                sab_error = str(e)
+                sab_handover_fail_count += 1
+                if should_log_repeated_failure(sab_handover_fail_count):
+                    log.warning("failed to apply sab handover limit (%dx): %s", sab_handover_fail_count, e)
 
         # Only arbitrate once both are reachable -- Arbitrator needs both
         # sides' real speed to mean anything, and there's nothing useful to

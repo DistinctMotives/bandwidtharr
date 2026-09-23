@@ -62,13 +62,17 @@ class SharedState:
         if not self._link_events_file:
             return
         try:
-            # write-then-rename, so a crash mid-write can never leave a
+            # write-then-fsync-then-rename, so neither a process crash nor a
+            # host power loss (the rename can be journaled before the tmp
+            # file's data reaches disk without the fsync) can leave a
             # truncated log file behind -- _load_link_events does handle a
             # corrupt file (starts empty rather than crashing), but this
             # keeps a rare event log from being silently lost outright.
             tmp_path = self._link_events_file + ".tmp"
             with open(tmp_path, "w") as f:
                 json.dump(list(self._link_events), f)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, self._link_events_file)
         except OSError as e:
             log.warning("state: failed to persist failover log to %s: %s", self._link_events_file, e)

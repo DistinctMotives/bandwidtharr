@@ -143,9 +143,7 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 - **Lookup:** three plain DNS queries against [Team Cymru's free public
   IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) -- one to
   learn your current public IP, two more for the ASN/org name behind it.
-  No third-party HTTP call. The IP echo query goes to `DNS_LOOKUP_HOST`
-  sent straight to `DNS_RESOLVER` (OpenDNS defaults); override either if
-  your network intercepts port 53 or you'd rather use a different resolver.
+  No third-party HTTP call.
 - **Classification:** `BACKUP_ISP_MATCH` matches against who's actually
   serving your traffic, so it's correct from the first check regardless
   of which link is active at startup, and unaffected by your primary

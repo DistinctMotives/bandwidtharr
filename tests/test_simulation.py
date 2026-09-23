@@ -336,14 +336,19 @@ def test_qbit_outage_freezes_state_then_resumes_correctly():
     assert arbitrator.sab_limit > 0
 
 
-def test_long_peer_outage_hands_full_budget_to_reachable_app_then_resumes_fair():
-    # Regression for the frozen-split gap: with one app's API down for
-    # longer than the handover window, main.py hands the reachable app the
-    # full effective budget (Arbitrator stays untouched -- arbitration
-    # needs both speeds). Short blips must NOT hand over (covered by the
-    # window check below). Mirrors main.py's gating: step() only when both
-    # reachable, handover only while they aren't, using the real
-    # should_hand_out_budget() rather than a copy of its logic.
+def _run_peer_outage(down, down_from, down_to, cycles, peer_keeps_transferring, sync_tracked_limit=True):
+    """Mirror main.py's peer-outage handover against the real Arbitrator and
+    the real should_hand_out_budget(): step() only while both apps are
+    reachable; while `down` ("qbit" or "sab") is unreachable, hand the
+    survivor the full budget once the outage outlasts the window, updating
+    the Arbitrator's tracked applied value exactly as main.py does.
+
+    `peer_keeps_transferring` models the realistic binhex case -- the API is
+    blind but the app's transfers keep running at the last limit it had
+    applied -- versus the container itself being down (speed 0).
+    `sync_tracked_limit=False` reproduces the pre-fix main.py for the
+    regression test. Returns (arbitrator, qbit, sab, trace) with trace as
+    {cycle: (applied_qbit, applied_sab, qbit_speed, sab_speed)}."""
     from bandwidtharr.main import PEER_HANDOVER_SECONDS, should_hand_out_budget
 
     rng = random.Random(11)
@@ -354,59 +359,105 @@ def test_long_peer_outage_hands_full_budget_to_reachable_app_then_resumes_fair()
 
     arbitrator = Arbitrator(TOTAL)
     now = 0.0
-    sab_unreachable_since = None
-    last_handover = None
-    applied_qbit = arbitrator.qbit_limit
-    sab_down_from, sab_down_to = 21, 56
-    out = []  # (cycle, applied_qbit, qbit_speed)
+    unreachable_since = None
+    # pre-fix main.py tracked the handover separately from the Arbitrator
+    applied_qbit, applied_sab = arbitrator.qbit_limit, arbitrator.sab_limit
+    trace = {}
 
-    for cycle in range(1, 131):
-        sab_ok = not (sab_down_from <= cycle < sab_down_to)
-        if sab_ok:
-            sab_unreachable_since = None
-        elif sab_unreachable_since is None:
-            sab_unreachable_since = now
+    for cycle in range(1, cycles + 1):
+        peer_ok = not (down_from <= cycle < down_to)
+        if peer_ok:
+            unreachable_since = None
+        elif unreachable_since is None:
+            unreachable_since = now
 
-        if sab_ok:
+        if peer_ok:
             new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
                 now, qbit.speed, sab.speed, TOTAL, ACTIVE_THRESHOLD, SETTLE_SECONDS, False,
             )
             if qbit_apply:
-                arbitrator.qbit_limit = new_qbit
+                arbitrator.qbit_limit = applied_qbit = new_qbit
             if sab_apply:
-                arbitrator.sab_limit = new_sab
-            last_handover = None
-            applied_qbit = arbitrator.qbit_limit
-            sab.step(arbitrator.sab_limit, cycle)
-        else:
-            if should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS) and last_handover != TOTAL:
+                arbitrator.sab_limit = applied_sab = new_sab
+        elif should_hand_out_budget(now, unreachable_since, PEER_HANDOVER_SECONDS):
+            if down == "sab":
                 applied_qbit = TOTAL
-                last_handover = TOTAL
-            sab.speed = 0.0  # container itself down, not just its API
+                if sync_tracked_limit:
+                    arbitrator.qbit_limit = TOTAL
+            else:
+                applied_sab = TOTAL
+                if sync_tracked_limit:
+                    arbitrator.sab_limit = TOTAL
 
-        qbit.step(applied_qbit, cycle)
-        out.append((cycle, applied_qbit, qbit.speed))
+        for app, name, applied in ((qbit, "qbit", applied_qbit), (sab, "sab", applied_sab)):
+            if not peer_ok and name == down and not peer_keeps_transferring:
+                app.speed = 0.0  # container itself down, not just its API
+            else:
+                app.step(applied, cycle)
+        trace[cycle] = (applied_qbit, applied_sab, qbit.speed, sab.speed)
         now += POLL_INTERVAL
 
-    by_cycle = {c: (a, s) for c, a, s in out}
+    return arbitrator, qbit, sab, trace
+
+
+def test_long_peer_outage_hands_full_budget_to_reachable_app_then_resumes_fair():
+    # Regression for the frozen-split gap: with one app's API down for
+    # longer than the handover window, main.py hands the reachable app the
+    # full effective budget. Short blips must NOT hand over (covered by the
+    # window check below).
+    from bandwidtharr.main import PEER_HANDOVER_SECONDS
+
+    sab_down_from, sab_down_to = 21, 56
+    arbitrator, qbit, sab, trace = _run_peer_outage(
+        "sab", sab_down_from, sab_down_to, cycles=130, peer_keeps_transferring=False,
+    )
 
     # blip tolerance: no handover the moment the outage starts...
-    assert by_cycle[sab_down_from + 1][0] == round(TOTAL / 2)
+    assert trace[sab_down_from + 1][0] == round(TOTAL / 2)
     # ...but once the outage has clearly outlasted the window, the full
     # budget is handed over and actually used
     handover_cycle = sab_down_from + int(PEER_HANDOVER_SECONDS / POLL_INTERVAL)
-    assert by_cycle[handover_cycle + 2][0] == TOTAL
-    assert by_cycle[sab_down_to - 1][1] >= TOTAL * 0.9
+    assert trace[handover_cycle + 2][0] == TOTAL
+    assert trace[sab_down_to - 1][2] >= TOTAL * 0.9
 
     # re-entry: qbit already at ceiling reads the returning app as idle
     # (both get the ceiling -- allocate()'s own designed behavior), so the
     # transient double-ceiling burst builds a compensator penalty that then
-    # decays; measured to converge to within 6% of an even split ~52
-    # cycles (about 2.5 min at the default 3s poll) after the resume, and
-    # hold there -- slow, but monotonic and strictly within-budget-bound
-    # once both apps are genuinely active again.
+    # decays; converges to an even split well within the run and holds
+    # there -- strictly within-budget-bound once both are genuinely active.
     assert abs(arbitrator.qbit_limit - arbitrator.sab_limit) <= TOTAL * 0.06
     assert qbit.speed + sab.speed <= TOTAL * 1.06
+
+
+def test_peer_returning_mid_transfer_is_reined_in_on_the_first_resumed_cycle():
+    # Regression for a real bug in the handover: it set the survivor's
+    # limit via the API but never updated the Arbitrator's tracked applied
+    # value. That only happened to work when the peer came back idle. In
+    # the realistic case -- its API was blind but its transfers kept
+    # running at the old limit -- the first resumed cycle compared the
+    # survivor's fair share against the stale tracked value, saw "no
+    # change", and left it at the FULL budget for ~8 cycles (~24s at the
+    # default poll) at ~150% of budget, while the overshoot compensator
+    # squeezed the app that was NOT over. Both outage directions.
+    down_from, down_to = 21, 56
+    for down in ("sab", "qbit"):
+        arbitrator, _qbit, _sab, trace = _run_peer_outage(
+            down, down_from, down_to, cycles=90, peer_keeps_transferring=True,
+        )
+        survivor_idx = 0 if down == "sab" else 1
+        assert trace[down_to - 1][survivor_idx] == TOTAL, down  # premise: handover happened
+        assert trace[down_to][survivor_idx] < TOTAL, f"{down}: survivor not reined in on the resumed cycle"
+        peak = max(qs + ss for _, _, qs, ss in (trace[c] for c in range(down_to, down_to + 10)))
+        assert peak <= TOTAL * 1.3, f"{down}: combined peaked at {peak / TOTAL:.0%} of budget after resume"
+        assert abs(arbitrator.qbit_limit - arbitrator.sab_limit) <= TOTAL * 0.06, down
+
+    # and the pre-fix behaviour really does fail this, so the test is
+    # actually guarding something
+    _a, _q, _s, stale = _run_peer_outage(
+        "qbit", down_from, down_to, cycles=90, peer_keeps_transferring=True, sync_tracked_limit=False,
+    )
+    assert stale[down_to][1] == TOTAL
+    assert max(qs + ss for _, _, qs, ss in (stale[c] for c in range(down_to, down_to + 10))) > TOTAL * 1.4
 
 
 def test_link_flip_during_outage_delivers_pending_link_changed_on_resume():
@@ -467,6 +518,7 @@ def test_link_flip_during_outage_delivers_pending_link_changed_on_resume():
         else:
             if should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS) and last_handover != current_total:
                 applied_qbit = current_total  # handover tracks the NEW budget after the flip
+                arbitrator.qbit_limit = current_total  # main.py syncs the tracked applied value
                 last_handover = current_total
 
         qbit.step(applied_qbit, cycle)
