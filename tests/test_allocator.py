@@ -9,27 +9,24 @@ def run(qbit_speed, sab_speed, qbit_limit=TOTAL, sab_limit=TOTAL):
 
 
 def test_both_idle_gets_full_ceiling():
-    qbit_limit, sab_limit, saturating = run(0, 0)
+    qbit_limit, sab_limit = run(0, 0)
     assert qbit_limit == TOTAL
     assert sab_limit == TOTAL
-    assert saturating is False
 
 
 def test_only_qbit_active_gets_full_ceiling():
     # a lone downloader gets the whole budget, not total-minus-floor -- the floor
     # is only there to keep either side from being squeezed to zero once BOTH
     # apps are active, not to pre-reserve headroom for one that isn't running.
-    qbit_limit, sab_limit, saturating = run(50_000_000, 0)
+    qbit_limit, sab_limit = run(50_000_000, 0)
     assert qbit_limit == TOTAL
     assert sab_limit == TOTAL
-    assert saturating is False
 
 
 def test_only_sab_active_gets_full_ceiling():
-    qbit_limit, sab_limit, saturating = run(0, 50_000_000)
+    qbit_limit, sab_limit = run(0, 50_000_000)
     assert qbit_limit == TOTAL
     assert sab_limit == TOTAL
-    assert saturating is False
 
 
 def test_first_both_active_cycle_resets_to_fifty_fifty_not_proportional_demand():
@@ -39,14 +36,13 @@ def test_first_both_active_cycle_resets_to_fifty_fifty_not_proportional_demand()
     # an equal baseline instead removes that ramp-order bias entirely --
     # qbit here is measured pulling 3x what sab is, but that's still not
     # enough to earn it more than an equal starting share.
-    qbit_limit, sab_limit, saturating = run(30_000_000, 10_000_000)
+    qbit_limit, sab_limit = run(30_000_000, 10_000_000)
     assert qbit_limit == sab_limit == round(TOTAL / 2)
 
 
 def test_both_active_equal_demand_splits_evenly():
-    qbit_limit, sab_limit, saturating = run(20_000_000, 20_000_000)
+    qbit_limit, sab_limit = run(20_000_000, 20_000_000)
     assert qbit_limit == sab_limit == round(TOTAL / 2)
-    assert saturating is False
 
 
 def test_slack_app_is_shrunk_in_favor_of_hungry_app():
@@ -54,18 +50,21 @@ def test_slack_app_is_shrunk_in_favor_of_hungry_app():
     # slack); qbit is capped low and fully using its 5M cap (hungry). sab's
     # share should shrink toward what it's actually using (plus headroom),
     # handing the difference to qbit.
-    qbit_limit, sab_limit, saturating = run(
+    qbit_limit, sab_limit = run(
         qbit_speed=5_000_000, sab_speed=5_000_000, qbit_limit=5_000_000, sab_limit=50_000_000,
     )
     assert qbit_limit > sab_limit
-    assert saturating is True
 
 
-def test_saturating_false_when_neither_app_near_its_limit():
-    qbit_limit, sab_limit, saturating = run(
+def test_shares_hold_when_both_comfortably_mid_range():
+    # Neither hungry nor slack: shares should be left exactly as they are --
+    # neither app is constrained by its cap in this regime, so any move
+    # would be reacting to noise rather than demand.
+    qbit_limit, sab_limit = run(
         qbit_speed=5_000_000, sab_speed=5_000_000, qbit_limit=50_000_000, sab_limit=50_000_000,
     )
-    assert saturating is False
+    assert qbit_limit == 50_000_000
+    assert sab_limit == 50_000_000
 
 
 def test_never_negative_or_over_total_on_a_tiny_backup_budget():
@@ -77,7 +76,7 @@ def test_never_negative_or_over_total_on_a_tiny_backup_budget():
     # conflict with `total` now, so this is structurally impossible: the
     # internal minimum share is always a fraction of whatever `total`
     # actually is.
-    qbit_limit, sab_limit, saturating = allocate(
+    qbit_limit, sab_limit = allocate(
         qbit_speed=1_000_000, sab_speed=1_000_000,
         qbit_limit=1_000_000, sab_limit=1_000_000,
         total=2_000_000, active_threshold=ACTIVE,
@@ -94,7 +93,7 @@ def test_result_never_exceeds_total_when_both_are_active():
     # is meant to get the whole budget, not a share of it).
     for qs in (1_000_000, 50_000_000, 200_000_000):
         for ss in (1_000_000, 50_000_000, 200_000_000):
-            qbit_limit, sab_limit, _saturating = run(qs, ss)
+            qbit_limit, sab_limit = run(qs, ss)
             assert qbit_limit + sab_limit <= TOTAL + 1  # rounding slack
 
 
@@ -233,13 +232,12 @@ def test_slack_shrink_still_works_on_a_small_backup_budget():
     # link. The internal headroom is now a fraction of `total`, so it
     # scales down automatically instead.
     backup_total = 50_000_000.0  # e.g. a 50 Mbps Starlink/5G failover budget
-    qbit_limit, sab_limit, saturating = allocate(
+    qbit_limit, sab_limit = allocate(
         qbit_speed=5_000_000, sab_speed=24_000_000,
         qbit_limit=25_000_000, sab_limit=25_000_000,
         total=backup_total, active_threshold=ACTIVE,
     )
     assert qbit_limit < 25_000_000, "slack app's share should have shrunk"
-    assert saturating is True
 
 
 def test_overshoot_compensator_no_penalty_within_margin():

@@ -19,11 +19,9 @@ def allocate(
     sab_limit: float,
     total: float,
     active_threshold: float,
-) -> tuple[int, int, bool]:
-    """Return (qbit_limit, sab_limit, saturating) in the same unit as the
-    inputs (bytes/sec), where `saturating` is True when either app is
-    currently pinned at (>= 90% of) its own current share while both are
-    active.
+) -> tuple[int, int]:
+    """Return (qbit_limit, sab_limit) in the same unit as the inputs
+    (bytes/sec).
 
     Max-min fair-share allocation: both apps get an equal split by default,
     and share only moves between them once one side demonstrably isn't
@@ -66,19 +64,12 @@ def allocate(
       a best-effort correction step afterward, and never negative
       regardless of how small `total` is (there's no separate absolute
       floor value left to conflict with it).
-    - `saturating` tells the caller this update reflects that genuine
-      demand change, not measurement noise -- callers gating applied
-      changes behind a hysteresis/change-threshold should bypass it
-      whenever `saturating` is True. Skipping that would risk a deadlock:
-      if a correction this small never clears the threshold, the limits
-      never change, so next cycle's inputs are identical and produce the
-      identical too-small correction again, forever.
     """
     qbit_active = qbit_speed > active_threshold
     sab_active = sab_speed > active_threshold
 
     if not (qbit_active and sab_active):
-        return round(total), round(total), False
+        return round(total), round(total)
 
     if qbit_limit >= total and sab_limit >= total:
         qbit_limit = sab_limit = total / 2
@@ -112,7 +103,7 @@ def allocate(
     new_qbit = max(headroom, min(total - headroom, new_qbit))
     new_sab = total - new_qbit
 
-    return round(new_qbit), round(new_sab), qbit_hungry or sab_hungry
+    return round(new_qbit), round(new_sab)
 
 
 class OvershootCompensator:
@@ -185,10 +176,18 @@ class Arbitrator:
     API -- set them directly after a successful set_download_limit() call;
     step() never touches them itself, only recommends new values, so a
     failed API call correctly leaves the tracked "currently applied"
-    value unchanged. qbit_fair_share is allocate()'s own bookkeeping
-    (untouched by the overshoot penalty, so the penalty never distorts
-    next cycle's fairness classification or midpoint calculation) and IS
-    updated internally by step().
+    value unchanged. qbit_fair_share is allocate()'s own bookkeeping and
+    IS updated internally by step(). It is never adjusted by the overshoot
+    penalty, so fairness never operates on penalty-adjusted share numbers
+    -- but it's not a perfect isolation: allocate() classifies each app
+    against its own current share, and a qbit pinned at its (penalty-
+    reduced) applied limit reports a speed that can read as "slack"
+    against the un-penalized fair share, compounding the shrink by up to
+    one headroom step. That is bounded and self-correcting once the
+    penalty decays (sim-verified by
+    test_persistent_overshoot_stays_bounded_and_sab_does_not_wander) -- a
+    deliberate trade against letting the penalty feed back into fairness
+    bookkeeping directly.
     """
 
     def __init__(self, total: float):
@@ -241,7 +240,7 @@ class Arbitrator:
             # safe in the conservative direction.
             self.overshoot_compensator = OvershootCompensator()
 
-        new_qbit_fair_share, new_sab_limit, saturating = allocate(
+        new_qbit_fair_share, new_sab_limit = allocate(
             qbit_speed, sab_speed, self.qbit_fair_share, self.sab_limit, total, active_threshold,
         )
         fairness_allowed = (

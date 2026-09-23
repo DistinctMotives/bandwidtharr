@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -61,8 +62,14 @@ class SharedState:
         if not self._link_events_file:
             return
         try:
-            with open(self._link_events_file, "w") as f:
+            # write-then-rename, so a crash mid-write can never leave a
+            # truncated log file behind -- _load_link_events does handle a
+            # corrupt file (starts empty rather than crashing), but this
+            # keeps a rare event log from being silently lost outright.
+            tmp_path = self._link_events_file + ".tmp"
+            with open(tmp_path, "w") as f:
                 json.dump(list(self._link_events), f)
+            os.replace(tmp_path, self._link_events_file)
         except OSError as e:
             log.warning("state: failed to persist failover log to %s: %s", self._link_events_file, e)
 
