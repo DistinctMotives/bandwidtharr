@@ -253,18 +253,14 @@ def main() -> None:
                         log.warning("failed to set qbit upload limit (%dx): %s", qbit_upload_fail_count, e)
 
         # Peer-outage handover: arbitration only runs when both apps are
-        # reachable, so during a long outage of one app's API the surviving
-        # app would otherwise sit throttled at a share sized for a two-way
-        # split of a budget nobody is competing for. The Arbitrator's
-        # tracked applied value is updated too (its documented contract
-        # for any successful set_download_limit()): the peer usually comes
-        # back with its transfers still running at its old limit, and
-        # without the sync the first resumed cycle compares against a
-        # stale value, sees "nothing changed", and leaves the survivor at
-        # the full budget for tens of seconds while the overshoot
-        # compensator squeezes the wrong app. Comparing against the
-        # tracked value also means a mid-outage link flip re-hands over at
-        # the new budget, with no separate handover state to keep in sync.
+        # reachable, so during a long outage of one app's API the survivor
+        # would otherwise sit throttled at a two-way split of a budget
+        # nobody is competing for. The Arbitrator's tracked applied value is
+        # updated like any other successful set (its documented contract) --
+        # the peer usually comes back mid-transfer, and the resumed cycle
+        # must see the real applied limit, not a stale one. Comparing
+        # against that tracked value also re-hands over at the new budget
+        # after a mid-outage link flip, with no separate state to keep.
         if (
             qbit_ok
             and should_hand_out_budget(mono_now, sab_unreachable_since, PEER_HANDOVER_SECONDS)

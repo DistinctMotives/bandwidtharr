@@ -336,31 +336,40 @@ def test_qbit_outage_freezes_state_then_resumes_correctly():
     assert arbitrator.sab_limit > 0
 
 
-def _run_peer_outage(down, down_from, down_to, cycles, peer_keeps_transferring, sync_tracked_limit=True):
+def _run_peer_outage(
+    down, down_from, down_to, cycles, peer_keeps_transferring,
+    total=TOTAL, total_schedule=None, sync_tracked_limit=True,
+):
     """Mirror main.py's peer-outage handover against the real Arbitrator and
     the real should_hand_out_budget(): step() only while both apps are
     reachable; while `down` ("qbit" or "sab") is unreachable, hand the
-    survivor the full budget once the outage outlasts the window, updating
-    the Arbitrator's tracked applied value exactly as main.py does.
+    survivor the full current budget once the outage outlasts the window,
+    updating the Arbitrator's tracked applied value exactly as main.py does.
 
     `peer_keeps_transferring` models the realistic binhex case -- the API is
     blind but the app's transfers keep running at the last limit it had
     applied -- versus the container itself being down (speed 0).
-    `sync_tracked_limit=False` reproduces the pre-fix main.py for the
-    regression test. Returns (arbitrator, qbit, sab, trace) with trace as
-    {cycle: (applied_qbit, applied_sab, qbit_speed, sab_speed)}."""
+    `total_schedule` ({cycle: new_total}) models WAN link flips, including
+    ones confirmed mid-outage, which main.py keeps pending until a step()
+    consumes them. `sync_tracked_limit=False` reproduces the pre-fix
+    main.py for the regression test. Returns (arbitrator, qbit, sab, trace)
+    with trace as {cycle: (applied_qbit, applied_sab, qbit_speed,
+    sab_speed)}."""
     from bandwidtharr.main import PEER_HANDOVER_SECONDS, should_hand_out_budget
 
     rng = random.Random(11)
     qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
     sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
-    qbit.speed = TOTAL * 0.5
-    sab.speed = TOTAL * 0.5
+    qbit.speed = total * 0.5
+    sab.speed = total * 0.5
 
-    arbitrator = Arbitrator(TOTAL)
+    arbitrator = Arbitrator(total)
     now = 0.0
+    current_total = total
     unreachable_since = None
-    # pre-fix main.py tracked the handover separately from the Arbitrator
+    pending_link_changed = False
+    # the API-applied values, which pre-fix main.py let drift from the
+    # Arbitrator's tracked ones during a handover
     applied_qbit, applied_sab = arbitrator.qbit_limit, arbitrator.sab_limit
     trace = {}
 
@@ -370,28 +379,35 @@ def _run_peer_outage(down, down_from, down_to, cycles, peer_keeps_transferring, 
             unreachable_since = None
         elif unreachable_since is None:
             unreachable_since = now
+        if total_schedule and cycle in total_schedule:
+            current_total = total_schedule[cycle]
+            pending_link_changed = True
 
         if peer_ok:
             new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-                now, qbit.speed, sab.speed, TOTAL, ACTIVE_THRESHOLD, SETTLE_SECONDS, False,
+                now, qbit.speed, sab.speed, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, pending_link_changed,
             )
+            pending_link_changed = False
             if qbit_apply:
                 arbitrator.qbit_limit = applied_qbit = new_qbit
             if sab_apply:
                 arbitrator.sab_limit = applied_sab = new_sab
         elif should_hand_out_budget(now, unreachable_since, PEER_HANDOVER_SECONDS):
             if down == "sab":
-                applied_qbit = TOTAL
+                applied_qbit = current_total
                 if sync_tracked_limit:
-                    arbitrator.qbit_limit = TOTAL
+                    arbitrator.qbit_limit = current_total
             else:
-                applied_sab = TOTAL
+                applied_sab = current_total
                 if sync_tracked_limit:
-                    arbitrator.sab_limit = TOTAL
+                    arbitrator.sab_limit = current_total
 
-        for app, name, applied in ((qbit, "qbit", applied_qbit), (sab, "sab", applied_sab)):
-            if not peer_ok and name == down and not peer_keeps_transferring:
-                app.speed = 0.0  # container itself down, not just its API
+        idle = None
+        if not peer_ok and not peer_keeps_transferring:
+            idle = qbit if down == "qbit" else sab  # container itself down, not just its API
+        for app, applied in ((qbit, applied_qbit), (sab, applied_sab)):
+            if app is idle:
+                app.speed = 0.0
             else:
                 app.step(applied, cycle)
         trace[cycle] = (applied_qbit, applied_sab, qbit.speed, sab.speed)
@@ -470,69 +486,19 @@ def test_link_flip_during_outage_delivers_pending_link_changed_on_resume():
     # jump (e.g. a converged backup split resuming on primary forces
     # qbit to the 10% floor and hands 90% to SAB) instead of classifying
     # both apps from a neutral half-of-new-total baseline.
-    from bandwidtharr.main import PEER_HANDOVER_SECONDS, should_hand_out_budget
-
     backup_total = TOTAL * 0.0625
-    rng = random.Random(12)
-    qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
-    sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
-    qbit.speed = backup_total * 0.5
-    sab.speed = backup_total * 0.5
-
-    arbitrator = Arbitrator(backup_total)
-    now = 0.0
-    current_total = backup_total
-    sab_unreachable_since = None
-    last_handover = None
-    pending_link_changed = False
     sab_down_from, sab_down_to, link_flip_cycle = 21, 51, 31
-    resumed = None
-    resumed_input_speeds = None
-    applied_trace = {}
-
-    for cycle in range(1, 62):
-        sab_ok = not (sab_down_from <= cycle < sab_down_to)
-        if sab_ok:
-            sab_unreachable_since = None
-        elif sab_unreachable_since is None:
-            sab_unreachable_since = now
-        if cycle == link_flip_cycle:
-            current_total = TOTAL
-            pending_link_changed = True  # main.py: flip detected in a cycle step() won't run
-
-        if sab_ok:
-            if cycle == sab_down_to:
-                resumed_input_speeds = (qbit.speed, sab.speed)
-            new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-                now, qbit.speed, sab.speed, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, pending_link_changed,
-            )
-            pending_link_changed = False
-            if qbit_apply:
-                arbitrator.qbit_limit = new_qbit
-            if sab_apply:
-                arbitrator.sab_limit = new_sab
-            last_handover = None
-            applied_qbit = arbitrator.qbit_limit
-            if cycle == sab_down_to:
-                resumed = (applied_qbit, arbitrator.sab_limit)
-        else:
-            if should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS) and last_handover != current_total:
-                applied_qbit = current_total  # handover tracks the NEW budget after the flip
-                arbitrator.qbit_limit = current_total  # main.py syncs the tracked applied value
-                last_handover = current_total
-
-        qbit.step(applied_qbit, cycle)
-        # sab's API was blind but its transfers kept running at the last
-        # limit it ever had applied -- the realistic binhex case
-        sab.step(arbitrator.sab_limit, cycle)
-        applied_trace[cycle] = applied_qbit
-        now += POLL_INTERVAL
+    _arbitrator, _qbit, _sab, trace = _run_peer_outage(
+        "sab", sab_down_from, sab_down_to, cycles=61, peer_keeps_transferring=True,
+        total=backup_total, total_schedule={link_flip_cycle: TOTAL},
+    )
 
     # premise: qbit was handed the flipped-to (primary) budget mid-outage...
-    assert applied_trace[link_flip_cycle + 15] == TOTAL
+    assert trace[link_flip_cycle + 15][0] == TOTAL
     # ...and at resume both apps were genuinely active at old backup scale
     # (sab still pulling ~3 Mbps) with qbit demanding primary scale --
     # otherwise the stale bookkeeping has nothing to get wrong
+    resumed_input_speeds = trace[sab_down_to - 1][2:]
     assert ACTIVE_THRESHOLD < resumed_input_speeds[1] < backup_total * 1.01
     assert resumed_input_speeds[0] > TOTAL * 0.9
 
@@ -542,7 +508,7 @@ def test_link_flip_during_outage_delivers_pending_link_changed_on_resume():
     # Without the pending flag, the stale backup-scale bookkeeping makes
     # allocate()'s defensive floor clamp force the documented artifact --
     # qbit to the 10% floor with 90% handed to a barely-downloading SAB.
-    assert resumed is not None
+    resumed = trace[sab_down_to][:2]
     assert resumed[0] > TOTAL * 0.7, "qbit should follow its real demand, not the stale-scale clamp"
     assert resumed[1] <= TOTAL * 0.2 + 1, "sab keeps demonstrated speed plus headroom"
 
