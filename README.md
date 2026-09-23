@@ -74,18 +74,19 @@ All configuration is via `.env` (see `.env.example`):
 | `SAB_URL`                    | SABnzbd base URL                                                       | `http://binhex-sabnzbdvpn:8080` |
 | `SAB_API_KEY`                | SABnzbd API key                                                        | *(required)* |
 | `TOTAL_LIMIT_MBPS`           | Combined download budget to enforce                                    | `800` |
-| `POLL_INTERVAL_SECONDS`      | How often to poll and re-evaluate                                      | `3` |
-| `ACTIVE_THRESHOLD_MBPS`      | Speed above which an app counts as "active" rather than idle           | `2` |
-| `REALLOCATION_SETTLE_SECONDS` | Minimum time between fairness-driven reallocations, letting each app settle into its new share before being judged again. Doesn't affect overshoot-correction speed -- only how fast unused headroom gets reclaimed and handed to the other app | `30` |
-| `OVERSHOOT_SETTLE_SECONDS`    | Minimum time between overshoot-correction adjustments to qBittorrent's limit, so it gets a stable target to settle into instead of a new cap every poll. Faster than `REALLOCATION_SETTLE_SECONDS` since this is a budget-safety mechanism, not a fairness one | `15` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
 | `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
 | `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |
 | `LINK_DETECTOR`               | `none` or `public_ip` -- see [WAN failover detection](#wan-failover-detection)    | `none` |
 
 The rest of the WAN-failover variables (`BACKUP_TOTAL_LIMIT_MBPS`,
-`BACKUP_ISP_MATCH`, `SLACK_WEBHOOK_URL`, and tuning knobs) are covered in
-that section.
+`BACKUP_ISP_MATCH`, `SLACK_WEBHOOK_URL`) are covered in that section.
+
+The internal timing knobs (poll interval, settle timers, link-check
+cadence, confirmation count) are deliberately left out of the docs: the
+defaults are meant to just work. They're all still overridable via `.env`
+-- see the `os.environ` reads at the top of `bandwidtharr/main.py` if you
+ever need one.
 
 ## Web dashboard
 
@@ -150,9 +151,9 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
   ISP's dynamic IP rotating.
 - **Fail-safe:** an unrecognized result (a hiccup, an outage) is treated as
   primary -- i.e. it fails toward *not* throttling, never toward backup.
-- **Debounce:** `LINK_FAILOVER_CONFIRM_COUNT` consecutive matching checks
-  are required before a switch actually happens, so a single transient
-  blip can't flap the budget.
+- **Debounce:** two consecutive matching checks are required before a
+  switch actually happens, so a single transient blip can't flap the
+  budget.
 - **Visibility:** every confirmed switch is logged at `INFO`; set
   `LOG_LEVEL=DEBUG` to see the detected string on *every* check instead,
   useful for finding your match value without waiting for a real failover.
@@ -171,15 +172,6 @@ transition, budget Mbps values, and a UTC timestamp -- never the
 detected IP/ISP. Sent in the background with a few retries on failure;
 if it still can't get through, that's only logged as a warning and never
 affects the bandwidth arbitration loop.
-
-### Tuning (optional, defaults shown)
-
-| Variable                      | Meaning | Default |
-|--------------------------------|---------|---------|
-| `LINK_CHECK_INTERVAL_SECONDS` | How often to check which link is active, whenever combined download speed is at/above `LINK_CHECK_MIN_SPEED_MBPS` or you're on the backup link | `30` |
-| `LINK_CHECK_IDLE_INTERVAL_SECONDS` | Coarser cadence used instead, while combined download speed is below `LINK_CHECK_MIN_SPEED_MBPS` | `900` |
-| `LINK_CHECK_MIN_SPEED_MBPS`   | Speed threshold that switches between the two cadences above (`0` = always use the active cadence) | `5` |
-| `LINK_FAILOVER_CONFIRM_COUNT` | Consecutive matching checks required before a switch actually happens | `2` |
 
 ## Development
 
