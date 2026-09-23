@@ -184,7 +184,7 @@ def test_arbitrator_link_changed_resets_fair_share_to_new_total_half():
     new_qbit, qbit_apply, new_sab, sab_apply, _penalty = arbitrator.step(
         now=1_000.0, qbit_speed=25_000_000.0, sab_speed=25_000_000.0,
         total=TOTAL, active_threshold=ACTIVE, reallocation_settle_seconds=30.0,
-        link_changed=True,
+        rebaseline=True,
     )
     assert new_qbit == round(TOTAL / 2)
     assert new_sab == round(TOTAL / 2)
@@ -209,7 +209,7 @@ def test_arbitrator_recovers_from_backup_to_primary_immediately():
     arbitrator.sab_limit = sab_limit
     now = 0.0
     new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-        now, TOTAL * 0.5, TOTAL * 0.5, backup_total, ACTIVE, 30.0, link_changed=True,
+        now, TOTAL * 0.5, TOTAL * 0.5, backup_total, ACTIVE, 30.0, rebaseline=True,
     )
     arbitrator.qbit_limit, arbitrator.sab_limit = new_qbit, new_sab
     assert new_qbit == new_sab == round(backup_total / 2)
@@ -217,7 +217,7 @@ def test_arbitrator_recovers_from_backup_to_primary_immediately():
     # recover back to primary
     now += 3.0
     new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-        now, new_qbit, new_sab, TOTAL, ACTIVE, 30.0, link_changed=True,
+        now, new_qbit, new_sab, TOTAL, ACTIVE, 30.0, rebaseline=True,
     )
     assert new_qbit == new_sab == round(TOTAL / 2)
     assert qbit_apply and sab_apply
@@ -309,7 +309,7 @@ def test_overshoot_correction_is_debounced_not_applied_every_cycle():
     for _ in range(20):
         new_qbit, qbit_apply, _new_sab, _sab_apply, penalty = arbitrator.step(
             now, qbit_speed, sab_speed, TOTAL, ACTIVE,
-            reallocation_settle_seconds=30.0, link_changed=False,
+            reallocation_settle_seconds=30.0, rebaseline=False,
             overshoot_settle_seconds=15.0,
         )
         if qbit_apply:

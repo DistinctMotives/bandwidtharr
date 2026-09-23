@@ -36,20 +36,20 @@ def should_log_repeated_failure(count: int) -> bool:
 
 
 # How long one app's API must stay continuously unreachable before the
-# outage is treated as real (not a VPN reconnect blip) and the full
-# effective budget is handed to the app that IS still reachable, instead
-# of arbitration sitting frozen at a split sized for two apps while only
-# one is actually being served.
-PEER_HANDOVER_SECONDS = 60.0
+# outage is treated as real (not a VPN reconnect blip). Until then
+# arbitration just pauses; after it, the unreachable app is arbitrated as
+# idle, so the app that IS reachable gets the full budget instead of
+# sitting at a split sized for two.
+PEER_OUTAGE_CONFIRM_SECONDS = 60.0
 
 
-def should_hand_out_budget(now: float, peer_unreachable_since: float | None, threshold_seconds: float) -> bool:
-    """True once the peer app has been continuously unreachable (its first
-    failure timestamp is `peer_unreachable_since`, None while reachable)
-    for at least `threshold_seconds`."""
-    if peer_unreachable_since is None:
+def outage_confirmed(now: float, unreachable_since: float | None, threshold_seconds: float) -> bool:
+    """True once an app has been continuously unreachable (its first
+    failure timestamp is `unreachable_since`, None while reachable) for at
+    least `threshold_seconds`."""
+    if unreachable_since is None:
         return False
-    return now - peer_unreachable_since >= threshold_seconds
+    return now - unreachable_since >= threshold_seconds
 
 
 def main() -> None:
@@ -93,9 +93,12 @@ def main() -> None:
     # a 5s blip into a 60s "outage" or defer a real one.
     qbit_unreachable_since = None
     sab_unreachable_since = None
-    qbit_handover_fail_count = 0
-    sab_handover_fail_count = 0
-    pending_link_changed = False
+    # Sticky "the current shares are stale, start both apps from a neutral
+    # baseline" request for the Arbitrator -- raised by a confirmed link
+    # flip or by an app returning from a confirmed outage, and kept until
+    # a step() actually consumes it, since arbitration may be skipped in
+    # the cycle it's raised (one app's API down).
+    pending_rebaseline = False
 
     qbit = QBittorrentClient(
         base_url=os.environ["QBIT_URL"],
@@ -129,35 +132,41 @@ def main() -> None:
         qbit_error, sab_error = None, None
         qbit_speed, sab_speed = 0.0, 0.0
         link_event = None
+        mono_now = time.monotonic()
 
         try:
             qbit_speed = qbit.get_download_speed()
             qbit_fail_count = 0
+            if outage_confirmed(mono_now, qbit_unreachable_since, PEER_OUTAGE_CONFIRM_SECONDS):
+                log.info("qbit back after a confirmed outage -- re-baselining shares")
+                pending_rebaseline = True
             qbit_unreachable_since = None
         except Exception as e:
             qbit_ok = False
             qbit_error = str(e)
             qbit_fail_count += 1
             if qbit_fail_count == 1:
-                qbit_unreachable_since = time.monotonic()
+                qbit_unreachable_since = mono_now
             if should_log_repeated_failure(qbit_fail_count):
                 log.warning("qbit unreachable (%dx): %s", qbit_fail_count, e)
 
         try:
             sab_speed = sab.get_download_speed()
             sab_fail_count = 0
+            if outage_confirmed(mono_now, sab_unreachable_since, PEER_OUTAGE_CONFIRM_SECONDS):
+                log.info("sab back after a confirmed outage -- re-baselining shares")
+                pending_rebaseline = True
             sab_unreachable_since = None
         except Exception as e:
             sab_ok = False
             sab_error = str(e)
             sab_fail_count += 1
             if sab_fail_count == 1:
-                sab_unreachable_since = time.monotonic()
+                sab_unreachable_since = mono_now
             if should_log_repeated_failure(sab_fail_count):
                 log.warning("sab unreachable (%dx): %s", sab_fail_count, e)
 
         now = time.time()
-        mono_now = time.monotonic()
         combined_speed = qbit_speed + sab_speed
         # Also use the fast cadence whenever currently on the backup link,
         # regardless of download activity -- otherwise a check made while
@@ -182,12 +191,7 @@ def main() -> None:
                 link_ok = True
                 link_error = None
                 if confirmed_link != previous_link:
-                    # Sticky: if arbitration happens to be skipped this cycle
-                    # (one app's API down), the reset still must reach the
-                    # Arbitrator on the first resumed cycle instead of being
-                    # silently lost -- hence pending_link_changed, consumed
-                    # at the step() call below, rather than a per-cycle flag.
-                    pending_link_changed = True
+                    pending_rebaseline = True
                     old_total_mbps = (backup_total if previous_link == BACKUP else total) * 8 / 1_000_000
                     new_total_mbps = (backup_total if confirmed_link == BACKUP else total) * 8 / 1_000_000
                     log.info(
@@ -252,59 +256,18 @@ def main() -> None:
                     if should_log_repeated_failure(qbit_upload_fail_count):
                         log.warning("failed to set qbit upload limit (%dx): %s", qbit_upload_fail_count, e)
 
-        # Peer-outage handover: arbitration only runs when both apps are
-        # reachable, so during a long outage of one app's API the survivor
-        # would otherwise sit throttled at a two-way split of a budget
-        # nobody is competing for. The Arbitrator's tracked applied value is
-        # updated like any other successful set (its documented contract) --
-        # the peer usually comes back mid-transfer, and the resumed cycle
-        # must see the real applied limit, not a stale one. Comparing
-        # against that tracked value also re-hands over at the new budget
-        # after a mid-outage link flip, with no separate state to keep.
-        if (
-            qbit_ok
-            and should_hand_out_budget(mono_now, sab_unreachable_since, PEER_HANDOVER_SECONDS)
-            and arbitrator.qbit_limit != effective_total
-        ):
-            try:
-                qbit.set_download_limit(int(effective_total))
-                log.info(
-                    "handing qbit full %.0f Mbps budget (sab unreachable > %.0fs)",
-                    effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
-                )
-                arbitrator.qbit_limit = effective_total
-                qbit_handover_fail_count = 0
-            except Exception as e:
-                qbit_ok = False
-                qbit_error = str(e)
-                qbit_handover_fail_count += 1
-                if should_log_repeated_failure(qbit_handover_fail_count):
-                    log.warning("failed to apply qbit handover limit (%dx): %s", qbit_handover_fail_count, e)
-
-        if (
-            sab_ok
-            and should_hand_out_budget(mono_now, qbit_unreachable_since, PEER_HANDOVER_SECONDS)
-            and arbitrator.sab_limit != effective_total
-        ):
-            try:
-                sab.set_download_limit(int(effective_total))
-                log.info(
-                    "handing sab full %.0f Mbps budget (qbit unreachable > %.0fs)",
-                    effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
-                )
-                arbitrator.sab_limit = effective_total
-                sab_handover_fail_count = 0
-            except Exception as e:
-                sab_ok = False
-                sab_error = str(e)
-                sab_handover_fail_count += 1
-                if should_log_repeated_failure(sab_handover_fail_count):
-                    log.warning("failed to apply sab handover limit (%dx): %s", sab_handover_fail_count, e)
-
-        # Only arbitrate once both are reachable -- Arbitrator needs both
-        # sides' real speed to mean anything, and there's nothing useful to
-        # do with just one.
-        if qbit_ok and sab_ok:
+        # Arbitration pauses while an app's API is briefly unreachable (a
+        # VPN reconnect blip) -- a missing speed reading means nothing yet.
+        # Once the outage is confirmed, the unreachable app is arbitrated as
+        # idle (its speed already reads 0.0 -- the GET failed), so
+        # allocate()'s lone-downloader rule gives the survivor the full
+        # budget through the normal path. Nothing is ever applied to the
+        # unreachable app, so its tracked limit stays exactly what's really
+        # set in it; when it returns, pending_rebaseline (raised at the GET
+        # above) restarts both apps from a neutral half/half baseline.
+        qbit_out = outage_confirmed(mono_now, qbit_unreachable_since, PEER_OUTAGE_CONFIRM_SECONDS)
+        sab_out = outage_confirmed(mono_now, sab_unreachable_since, PEER_OUTAGE_CONFIRM_SECONDS)
+        if (qbit_ok or qbit_out) and (sab_ok or sab_out):
             new_qbit_limit, qbit_should_apply, new_sab_limit, sab_should_apply, overshoot_penalty = arbitrator.step(
                 now=now,
                 qbit_speed=qbit_speed,
@@ -312,12 +275,12 @@ def main() -> None:
                 total=effective_total,
                 active_threshold=active_threshold,
                 reallocation_settle_seconds=reallocation_settle_seconds,
-                link_changed=pending_link_changed,
+                rebaseline=pending_rebaseline,
                 overshoot_settle_seconds=overshoot_settle_seconds,
             )
-            pending_link_changed = False
+            pending_rebaseline = False
 
-            if qbit_should_apply:
+            if qbit_should_apply and qbit_ok:
                 try:
                     qbit.set_download_limit(int(new_qbit_limit))
                     log.info(
@@ -331,7 +294,7 @@ def main() -> None:
                     qbit_error = str(e)
                     log.warning("failed to set qbit limit: %s", e)
 
-            if sab_should_apply:
+            if sab_should_apply and sab_ok:
                 try:
                     sab.set_download_limit(int(new_sab_limit))
                     log.info(

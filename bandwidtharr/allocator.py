@@ -197,6 +197,7 @@ class Arbitrator:
         self.last_reallocation_at = 0.0
         self.last_qbit_apply_at = 0.0
         self.overshoot_compensator = OvershootCompensator()
+        self._last_total = total
         self._first_cycle = True
 
     def step(
@@ -207,16 +208,25 @@ class Arbitrator:
         total: float,
         active_threshold: float,
         reallocation_settle_seconds: float,
-        link_changed: bool,
+        rebaseline: bool,
         overshoot_settle_seconds: float = 15.0,
     ) -> tuple[float, bool, float, bool, float]:
         """Call once per poll cycle. Returns (new_qbit_limit,
         qbit_should_apply, new_sab_limit, sab_should_apply,
-        overshoot_penalty)."""
+        overshoot_penalty). `rebaseline` says the current shares are
+        stale -- a WAN budget swap, or an app returning from a confirmed
+        outage during which the other held the whole budget -- and both
+        apps should restart from a neutral half/half baseline."""
         first_cycle, self._first_cycle = self._first_cycle, False
-        previous_sab_limit = self.sab_limit  # what's actually applied right now, before any reset below
 
-        if link_changed:
+        # SAB has no separate fair-share bookkeeping: its share IS its
+        # applied limit (always total minus qbit's share). A rebaseline
+        # therefore feeds allocate() a neutral half as SAB's share without
+        # writing it to self.sab_limit -- that stays what's really applied
+        # until the caller's (forced, see below) apply succeeds, which is
+        # what keeps it truthful if that apply fails or SAB is unreachable.
+        sab_share = total / 2 if rebaseline else self.sab_limit
+        if rebaseline:
             # A WAN failover budget swap invalidates any existing share as
             # a fraction of the OLD total -- reset to a neutral baseline on
             # the new one, same as allocate()'s own first-both-active
@@ -227,24 +237,34 @@ class Arbitrator:
             # 800 Mbps primary would otherwise force qbit up to 80 Mbps
             # immediately (10% of the new total), purely because 25 fell
             # below that floor -- not because of any fairness decision.
-            self.qbit_fair_share = self.sab_limit = total / 2
-            # Same staleness argument applies to the overshoot penalty:
-            # it's sized against the OLD total, so against a much smaller
-            # new budget even a modest correction immediately slams
-            # qBittorrent's limit to the floor, where it lingers for as
-            # long as the slow decay takes against the new total -- and
-            # being floor-pinned also makes qbit read as "slack" to
-            # allocate(), handing its share away. Any overshoot genuinely
-            # ongoing against the new budget re-confirms and re-grows a
-            # correctly-sized penalty within a few cycles, so resetting is
-            # safe in the conservative direction.
+            # A peer returning from a confirmed outage is the same
+            # situation from the other side: the survivor's fair share
+            # drifted to the whole budget while it ran alone, and resuming
+            # from 100/0 would clamp the returning app to the floor.
+            self.qbit_fair_share = total / 2
+
+        if total != self._last_total:
+            # The overshoot penalty is sized against the total it was built
+            # up under, so against a much smaller new budget even a modest
+            # correction immediately slams qBittorrent's limit to the
+            # floor, where it lingers for as long as the slow decay takes
+            # against the new total -- and being floor-pinned also makes
+            # qbit read as "slack" to allocate(), handing its share away.
+            # Any overshoot genuinely ongoing against the new budget
+            # re-confirms and re-grows a correctly-sized penalty within a
+            # few cycles, so resetting is safe in the conservative
+            # direction. Keyed on the total itself rather than on
+            # `rebaseline`: a rebaseline for a peer returning from an
+            # outage leaves the budget unchanged, and a still-valid
+            # penalty should survive it.
             self.overshoot_compensator = OvershootCompensator()
+            self._last_total = total
 
         new_qbit_fair_share, new_sab_limit = allocate(
-            qbit_speed, sab_speed, self.qbit_fair_share, self.sab_limit, total, active_threshold,
+            qbit_speed, sab_speed, self.qbit_fair_share, sab_share, total, active_threshold,
         )
         fairness_allowed = (
-            first_cycle or link_changed
+            first_cycle or rebaseline
             or now - self.last_reallocation_at >= reallocation_settle_seconds
         )
         fairness_changed = new_qbit_fair_share != self.qbit_fair_share or new_sab_limit != self.sab_limit
@@ -262,16 +282,15 @@ class Arbitrator:
         # on literally every poll, never giving its own rate limiter a
         # stable target to actually settle into.
         overshoot_apply = overshoot_penalty > 0 and new_qbit_limit != self.qbit_limit and (
-            first_cycle or link_changed or now - self.last_qbit_apply_at >= overshoot_settle_seconds
+            first_cycle or rebaseline or now - self.last_qbit_apply_at >= overshoot_settle_seconds
         )
 
-        # link_changed always applies fresh values to both sides -- the old
-        # applied values are stale/meaningless against the new total
-        # regardless of whether either happens to numerically match (the
-        # sab_limit reset above would otherwise make that comparison miss a
-        # coincidental match against its own just-reset value).
-        qbit_should_apply = link_changed or (fairness_allowed and new_qbit_limit != self.qbit_limit) or overshoot_apply
-        sab_should_apply = link_changed or (fairness_allowed and new_sab_limit != previous_sab_limit)
+        # A rebaseline bypasses the settle gate (via fairness_allowed) but is
+        # otherwise an ordinary decision: nothing is re-applied when the new
+        # value already matches what the app has -- a no-op set would only
+        # restart the overshoot settle window for nothing.
+        qbit_should_apply = (fairness_allowed and new_qbit_limit != self.qbit_limit) or overshoot_apply
+        sab_should_apply = fairness_allowed and new_sab_limit != self.sab_limit
 
         if qbit_should_apply:
             self.last_qbit_apply_at = now

@@ -7,6 +7,8 @@ jitter.
 """
 import random
 
+import pytest
+
 from bandwidtharr.allocator import Arbitrator
 
 TOTAL = 100_000_000.0  # 100 MB/s ~ 800 Mbps
@@ -285,14 +287,12 @@ def test_wan_failover_with_active_overshoot_correction_does_not_pin_qbit_at_floo
 
 
 def test_qbit_outage_freezes_state_then_resumes_correctly():
-    # A real network/API outage means main.py simply doesn't call
-    # Arbitrator.step() for however many cycles qbit is unreachable
-    # (mirrors main.py's `if qbit_ok and sab_ok:` gate) -- state should
-    # stay exactly frozen through the outage, then resume normally
-    # afterward with no crash or corrupted state. (main.py's long-outage
-    # budget handover deliberately applies limits straight to the
-    # reachable app's API and never touches the Arbitrator, so this
-    # still holds -- see test_long_peer_outage_hands_full_budget_...)
+    # A short API outage (under PEER_OUTAGE_CONFIRM_SECONDS) means main.py
+    # simply doesn't call Arbitrator.step() for however many cycles qbit is
+    # unreachable -- state should stay exactly frozen through the blip,
+    # then resume normally afterward with no crash or corrupted state.
+    # (Outages that outlast the window are covered by
+    # test_long_peer_outage_hands_full_budget_...)
     rng = random.Random(7)
     qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
     sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
@@ -336,26 +336,25 @@ def test_qbit_outage_freezes_state_then_resumes_correctly():
     assert arbitrator.sab_limit > 0
 
 
-def _run_peer_outage(
-    down, down_from, down_to, cycles, peer_keeps_transferring,
-    total=TOTAL, total_schedule=None, sync_tracked_limit=True,
-):
-    """Mirror main.py's peer-outage handover against the real Arbitrator and
-    the real should_hand_out_budget(): step() only while both apps are
-    reachable; while `down` ("qbit" or "sab") is unreachable, hand the
-    survivor the full current budget once the outage outlasts the window,
-    updating the Arbitrator's tracked applied value exactly as main.py does.
+def _run_peer_outage(down, down_from, down_to, cycles, peer_keeps_transferring, total=TOTAL, total_schedule=None):
+    """Mirror main.py's handling of one app's API being unreachable, against
+    the real Arbitrator and the real outage_confirmed(): a short blip skips
+    arbitration entirely; once the outage is confirmed the unreachable app
+    (`down`, "qbit" or "sab") is fed to step() as idle -- speed 0, its GET
+    failed -- so allocate()'s lone-downloader rule hands the survivor the
+    full current budget through the normal path, and only the reachable
+    app has limits applied; the first reachable cycle afterwards passes
+    rebaseline=True, exactly as main.py does.
 
     `peer_keeps_transferring` models the realistic binhex case -- the API is
     blind but the app's transfers keep running at the last limit it had
     applied -- versus the container itself being down (speed 0).
     `total_schedule` ({cycle: new_total}) models WAN link flips, including
-    ones confirmed mid-outage, which main.py keeps pending until a step()
-    consumes them. `sync_tracked_limit=False` reproduces the pre-fix
-    main.py for the regression test. Returns (arbitrator, qbit, sab, trace)
-    with trace as {cycle: (applied_qbit, applied_sab, qbit_speed,
-    sab_speed)}."""
-    from bandwidtharr.main import PEER_HANDOVER_SECONDS, should_hand_out_budget
+    ones during an outage, which main.py keeps pending until a step()
+    consumes them. Returns (arbitrator, qbit, sab, trace) with trace as
+    {cycle: (qbit_limit, sab_limit, qbit_speed, sab_speed)} -- the limits
+    being the Arbitrator's tracked applied values."""
+    from bandwidtharr.main import PEER_OUTAGE_CONFIRM_SECONDS, outage_confirmed
 
     rng = random.Random(11)
     qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
@@ -367,50 +366,43 @@ def _run_peer_outage(
     now = 0.0
     current_total = total
     unreachable_since = None
-    pending_link_changed = False
-    # the API-applied values, which pre-fix main.py let drift from the
-    # Arbitrator's tracked ones during a handover
-    applied_qbit, applied_sab = arbitrator.qbit_limit, arbitrator.sab_limit
+    pending_rebaseline = False
     trace = {}
 
     for cycle in range(1, cycles + 1):
         peer_ok = not (down_from <= cycle < down_to)
         if peer_ok:
+            if outage_confirmed(now, unreachable_since, PEER_OUTAGE_CONFIRM_SECONDS):
+                pending_rebaseline = True
             unreachable_since = None
         elif unreachable_since is None:
             unreachable_since = now
         if total_schedule and cycle in total_schedule:
             current_total = total_schedule[cycle]
-            pending_link_changed = True
+            pending_rebaseline = True
 
-        if peer_ok:
+        peer_out = outage_confirmed(now, unreachable_since, PEER_OUTAGE_CONFIRM_SECONDS)
+        if peer_ok or peer_out:
+            qbit_reading = 0.0 if peer_out and down == "qbit" else qbit.speed
+            sab_reading = 0.0 if peer_out and down == "sab" else sab.speed
             new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-                now, qbit.speed, sab.speed, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, pending_link_changed,
+                now, qbit_reading, sab_reading, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, pending_rebaseline,
             )
-            pending_link_changed = False
-            if qbit_apply:
-                arbitrator.qbit_limit = applied_qbit = new_qbit
-            if sab_apply:
-                arbitrator.sab_limit = applied_sab = new_sab
-        elif should_hand_out_budget(now, unreachable_since, PEER_HANDOVER_SECONDS):
-            if down == "sab":
-                applied_qbit = current_total
-                if sync_tracked_limit:
-                    arbitrator.qbit_limit = current_total
-            else:
-                applied_sab = current_total
-                if sync_tracked_limit:
-                    arbitrator.sab_limit = current_total
+            pending_rebaseline = False
+            if qbit_apply and (peer_ok or down != "qbit"):
+                arbitrator.qbit_limit = new_qbit
+            if sab_apply and (peer_ok or down != "sab"):
+                arbitrator.sab_limit = new_sab
 
         idle = None
         if not peer_ok and not peer_keeps_transferring:
             idle = qbit if down == "qbit" else sab  # container itself down, not just its API
-        for app, applied in ((qbit, applied_qbit), (sab, applied_sab)):
+        for app, applied in ((qbit, arbitrator.qbit_limit), (sab, arbitrator.sab_limit)):
             if app is idle:
                 app.speed = 0.0
             else:
                 app.step(applied, cycle)
-        trace[cycle] = (applied_qbit, applied_sab, qbit.speed, sab.speed)
+        trace[cycle] = (arbitrator.qbit_limit, arbitrator.sab_limit, qbit.speed, sab.speed)
         now += POLL_INTERVAL
 
     return arbitrator, qbit, sab, trace
@@ -418,22 +410,22 @@ def _run_peer_outage(
 
 def test_long_peer_outage_hands_full_budget_to_reachable_app_then_resumes_fair():
     # Regression for the frozen-split gap: with one app's API down for
-    # longer than the handover window, main.py hands the reachable app the
-    # full effective budget. Short blips must NOT hand over (covered by the
-    # window check below).
-    from bandwidtharr.main import PEER_HANDOVER_SECONDS
+    # longer than the confirmation window, the reachable app gets the full
+    # effective budget. Short blips must NOT (covered by the window check
+    # below).
+    from bandwidtharr.main import PEER_OUTAGE_CONFIRM_SECONDS
 
     sab_down_from, sab_down_to = 21, 56
     arbitrator, qbit, sab, trace = _run_peer_outage(
         "sab", sab_down_from, sab_down_to, cycles=130, peer_keeps_transferring=False,
     )
 
-    # blip tolerance: no handover the moment the outage starts...
+    # blip tolerance: nothing changes the moment the outage starts...
     assert trace[sab_down_from + 1][0] == round(TOTAL / 2)
     # ...but once the outage has clearly outlasted the window, the full
-    # budget is handed over and actually used
-    handover_cycle = sab_down_from + int(PEER_HANDOVER_SECONDS / POLL_INTERVAL)
-    assert trace[handover_cycle + 2][0] == TOTAL
+    # budget goes to the survivor and is actually used
+    confirm_cycle = sab_down_from + int(PEER_OUTAGE_CONFIRM_SECONDS / POLL_INTERVAL)
+    assert trace[confirm_cycle + 2][0] == TOTAL
     assert trace[sab_down_to - 1][2] >= TOTAL * 0.9
 
     # re-entry: qbit already at ceiling reads the returning app as idle
@@ -446,55 +438,49 @@ def test_long_peer_outage_hands_full_budget_to_reachable_app_then_resumes_fair()
 
 
 def test_peer_returning_mid_transfer_is_reined_in_on_the_first_resumed_cycle():
-    # Regression for a real bug in the handover: it set the survivor's
-    # limit via the API but never updated the Arbitrator's tracked applied
-    # value. That only happened to work when the peer came back idle. In
-    # the realistic case -- its API was blind but its transfers kept
-    # running at the old limit -- the first resumed cycle compared the
-    # survivor's fair share against the stale tracked value, saw "no
-    # change", and left it at the FULL budget for ~8 cycles (~24s at the
-    # default poll) at ~150% of budget, while the overshoot compensator
-    # squeezed the app that was NOT over. Both outage directions.
+    # The realistic re-entry: the peer's API was blind but its transfers
+    # kept running at its old limit, so the moment it's reachable again
+    # both apps are genuinely active and the survivor is still at the FULL
+    # budget. It must be reined in on that very cycle (the rebaseline on
+    # return), not tens of seconds later -- a regression here previously
+    # left combined throughput at ~150% of budget for ~24s while the
+    # overshoot compensator squeezed the app that was NOT over. Both
+    # outage directions.
     down_from, down_to = 21, 56
     for down in ("sab", "qbit"):
         arbitrator, _qbit, _sab, trace = _run_peer_outage(
             down, down_from, down_to, cycles=90, peer_keeps_transferring=True,
         )
         survivor_idx = 0 if down == "sab" else 1
-        assert trace[down_to - 1][survivor_idx] == TOTAL, down  # premise: handover happened
+        assert trace[down_to - 1][survivor_idx] == TOTAL, down  # premise: survivor held the whole budget
         assert trace[down_to][survivor_idx] < TOTAL, f"{down}: survivor not reined in on the resumed cycle"
         peak = max(qs + ss for _, _, qs, ss in (trace[c] for c in range(down_to, down_to + 10)))
         assert peak <= TOTAL * 1.3, f"{down}: combined peaked at {peak / TOTAL:.0%} of budget after resume"
         assert abs(arbitrator.qbit_limit - arbitrator.sab_limit) <= TOTAL * 0.06, down
 
-    # and the pre-fix behaviour really does fail this, so the test is
-    # actually guarding something
-    _a, _q, _s, stale = _run_peer_outage(
-        "qbit", down_from, down_to, cycles=90, peer_keeps_transferring=True, sync_tracked_limit=False,
-    )
-    assert stale[down_to][1] == TOTAL
-    assert max(qs + ss for _, _, qs, ss in (stale[c] for c in range(down_to, down_to + 10))) > TOTAL * 1.4
 
-
-def test_link_flip_during_outage_delivers_pending_link_changed_on_resume():
-    # The link-check runs even while arbitration is skipped (one app's API
-    # down), so a confirmed link flip can happen in a cycle where step() is
-    # never called -- main.py must remember it (pending flag) and deliver
-    # link_changed=True on the first resumed cycle. Without that, the
-    # Arbitrator resumes against the new budget with old-scale bookkeeping
-    # and allocate()'s defensive floor clamp forces the documented spurious
-    # jump (e.g. a converged backup split resuming on primary forces
-    # qbit to the 10% floor and hands 90% to SAB) instead of classifying
-    # both apps from a neutral half-of-new-total baseline.
+@pytest.mark.parametrize("link_flip_cycle", [31, 45], ids=["flip during blip window", "flip during confirmed outage"])
+def test_link_flip_during_outage_reaches_the_arbitrator(link_flip_cycle):
+    # The link-check keeps running while one app's API is down. A flip
+    # confirmed during the blip window lands in a cycle where step() isn't
+    # called at all, so main.py must keep the rebaseline request pending
+    # until a step() consumes it; one confirmed during an established
+    # outage is consumed right away and re-hands the survivor the NEW
+    # budget. Either way, when the peer returns the shares must be
+    # re-baselined against the current budget -- otherwise allocate()'s
+    # defensive floor clamp against stale backup-scale bookkeeping forces
+    # the documented spurious jump (qbit to the 10% floor, 90% handed to a
+    # barely-downloading SAB) instead of classifying both apps from a
+    # neutral half-of-new-total baseline.
     backup_total = TOTAL * 0.0625
-    sab_down_from, sab_down_to, link_flip_cycle = 21, 51, 31
+    sab_down_from, sab_down_to = 21, 51
     _arbitrator, _qbit, _sab, trace = _run_peer_outage(
         "sab", sab_down_from, sab_down_to, cycles=61, peer_keeps_transferring=True,
         total=backup_total, total_schedule={link_flip_cycle: TOTAL},
     )
 
-    # premise: qbit was handed the flipped-to (primary) budget mid-outage...
-    assert trace[link_flip_cycle + 15][0] == TOTAL
+    # premise: qbit held the flipped-to (primary) budget by the end of the outage...
+    assert trace[sab_down_to - 1][0] == TOTAL
     # ...and at resume both apps were genuinely active at old backup scale
     # (sab still pulling ~3 Mbps) with qbit demanding primary scale --
     # otherwise the stale bookkeeping has nothing to get wrong
@@ -551,7 +537,7 @@ def test_flaky_link_detector_blips_are_debounced_before_reaching_arbitrator():
     # A noisy/flaky link detector (e.g. a transient DNS hiccup misreading
     # an ASN lookup) shouldn't be able to trigger a real budget swap on its
     # own -- LinkStateTracker's confirm-count debounce must filter isolated
-    # blips out before Arbitrator ever sees link_changed=True.
+    # blips out before Arbitrator ever sees rebaseline=True.
     from bandwidtharr.link_detector import BACKUP, PRIMARY, LinkStateTracker
 
     rng = random.Random(9)
