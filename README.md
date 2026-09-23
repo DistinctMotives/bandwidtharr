@@ -17,6 +17,11 @@ actually needs, live, instead of you having to guess at fixed caps for each.
   qBittorrent's real throughput keeps exceeding its limit (common with
   UDP-heavy torrent traffic that's hard to rate-limit precisely),
   squeezing it further until combined usage is back within budget.
+- **Tolerant of one app being down** -- if one app's API stays unreachable
+  for over a minute (e.g. a VPN container reconnecting), the other is
+  handed the full active budget instead of sitting frozen at the last
+  two-way split. Brief blips don't trigger it; normal fairness resumes
+  automatically once both are reachable again.
 - **WAN failover detection** *(optional)* -- notices when your router fails
   over to a backup connection (Starlink, 5G, a hotspot...) and swaps in a
   lower budget automatically, no router integration or vendor-specific
@@ -138,7 +143,9 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
 - **Lookup:** three plain DNS queries against [Team Cymru's free public
   IP-to-ASN service](https://www.team-cymru.com/ip-asn-mapping) -- one to
   learn your current public IP, two more for the ASN/org name behind it.
-  No third-party HTTP call.
+  No third-party HTTP call. The IP echo query goes to `DNS_LOOKUP_HOST`
+  sent straight to `DNS_RESOLVER` (OpenDNS defaults); override either if
+  your network intercepts port 53 or you'd rather use a different resolver.
 - **Classification:** `BACKUP_ISP_MATCH` matches against who's actually
   serving your traffic, so it's correct from the first check regardless
   of which link is active at startup, and unaffected by your primary

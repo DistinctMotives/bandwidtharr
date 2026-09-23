@@ -35,6 +35,23 @@ def should_log_repeated_failure(count: int) -> bool:
     return count == 1 or count % 20 == 0
 
 
+# How long one app's API must stay continuously unreachable before the
+# outage is treated as real (not a VPN reconnect blip) and the full
+# effective budget is handed to the app that IS still reachable, instead
+# of arbitration sitting frozen at a split sized for two apps while only
+# one is actually being served.
+PEER_HANDOVER_SECONDS = 60.0
+
+
+def should_hand_out_budget(now: float, peer_unreachable_since: float | None, threshold_seconds: float) -> bool:
+    """True once the peer app has been continuously unreachable (its first
+    failure timestamp is `peer_unreachable_since`, None while reachable)
+    for at least `threshold_seconds`."""
+    if peer_unreachable_since is None:
+        return False
+    return now - peer_unreachable_since >= threshold_seconds
+
+
 def main() -> None:
     total = mbps_to_bytes(float(os.environ.get("TOTAL_LIMIT_MBPS", "800")))
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "3"))
@@ -71,6 +88,11 @@ def main() -> None:
     sab_fail_count = 0
     link_fail_count = 0
     qbit_upload_fail_count = 0
+    qbit_unreachable_since = None
+    sab_unreachable_since = None
+    last_qbit_handover_limit = None
+    last_sab_handover_limit = None
+    pending_link_changed = False
 
     qbit = QBittorrentClient(
         base_url=os.environ["QBIT_URL"],
@@ -103,26 +125,31 @@ def main() -> None:
         qbit_ok, sab_ok = True, True
         qbit_error, sab_error = None, None
         qbit_speed, sab_speed = 0.0, 0.0
-        link_changed = False
         link_event = None
 
         try:
             qbit_speed = qbit.get_download_speed()
             qbit_fail_count = 0
+            qbit_unreachable_since = None
         except Exception as e:
             qbit_ok = False
             qbit_error = str(e)
             qbit_fail_count += 1
+            if qbit_fail_count == 1:
+                qbit_unreachable_since = time.time()
             if should_log_repeated_failure(qbit_fail_count):
                 log.warning("qbit unreachable (%dx): %s", qbit_fail_count, e)
 
         try:
             sab_speed = sab.get_download_speed()
             sab_fail_count = 0
+            sab_unreachable_since = None
         except Exception as e:
             sab_ok = False
             sab_error = str(e)
             sab_fail_count += 1
+            if sab_fail_count == 1:
+                sab_unreachable_since = time.time()
             if should_log_repeated_failure(sab_fail_count):
                 log.warning("sab unreachable (%dx): %s", sab_fail_count, e)
 
@@ -151,7 +178,12 @@ def main() -> None:
                 link_ok = True
                 link_error = None
                 if confirmed_link != previous_link:
-                    link_changed = True
+                    # Sticky: if arbitration happens to be skipped this cycle
+                    # (one app's API down), the reset still must reach the
+                    # Arbitrator on the first resumed cycle instead of being
+                    # silently lost -- hence pending_link_changed, consumed
+                    # at the step() call below, rather than a per-cycle flag.
+                    pending_link_changed = True
                     old_total_mbps = (backup_total if previous_link == BACKUP else total) * 8 / 1_000_000
                     new_total_mbps = (backup_total if confirmed_link == BACKUP else total) * 8 / 1_000_000
                     log.info(
@@ -216,6 +248,44 @@ def main() -> None:
                     if should_log_repeated_failure(qbit_upload_fail_count):
                         log.warning("failed to set qbit upload limit (%dx): %s", qbit_upload_fail_count, e)
 
+        # Peer-outage handover: arbitration only runs when both apps are
+        # reachable, so during a long outage of one app's API the surviving
+        # app would otherwise sit throttled at a share sized for a two-way
+        # split of a budget nobody is competing for. Deliberately touches
+        # only the app's own applied limit, never the Arbitrator's
+        # bookkeeping: the handover value (full effective budget) is
+        # exactly what allocate() itself assigns while one side is idle, so
+        # the first resumed cycle re-syncs naturally through the existing
+        # paths. Re-checked every cycle, so a mid-outage link flip re-hands
+        # over at the new budget; state clears as soon as both are reachable.
+        if qbit_ok and should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS):
+            if last_qbit_handover_limit != effective_total:
+                try:
+                    qbit.set_download_limit(int(effective_total))
+                    log.info(
+                        "handing qbit full %.0f Mbps budget (sab unreachable > %.0fs)",
+                        effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
+                    )
+                    last_qbit_handover_limit = effective_total
+                except Exception as e:
+                    log.warning("failed to apply qbit handover limit: %s", e)
+        else:
+            last_qbit_handover_limit = None
+
+        if sab_ok and should_hand_out_budget(now, qbit_unreachable_since, PEER_HANDOVER_SECONDS):
+            if last_sab_handover_limit != effective_total:
+                try:
+                    sab.set_download_limit(int(effective_total))
+                    log.info(
+                        "handing sab full %.0f Mbps budget (qbit unreachable > %.0fs)",
+                        effective_total * 8 / 1_000_000, PEER_HANDOVER_SECONDS,
+                    )
+                    last_sab_handover_limit = effective_total
+                except Exception as e:
+                    log.warning("failed to apply sab handover limit: %s", e)
+        else:
+            last_sab_handover_limit = None
+
         # Only arbitrate once both are reachable -- Arbitrator needs both
         # sides' real speed to mean anything, and there's nothing useful to
         # do with just one.
@@ -227,9 +297,10 @@ def main() -> None:
                 total=effective_total,
                 active_threshold=active_threshold,
                 reallocation_settle_seconds=reallocation_settle_seconds,
-                link_changed=link_changed,
+                link_changed=pending_link_changed,
                 overshoot_settle_seconds=overshoot_settle_seconds,
             )
+            pending_link_changed = False
 
             if qbit_should_apply:
                 try:

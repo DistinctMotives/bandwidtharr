@@ -289,7 +289,10 @@ def test_qbit_outage_freezes_state_then_resumes_correctly():
     # Arbitrator.step() for however many cycles qbit is unreachable
     # (mirrors main.py's `if qbit_ok and sab_ok:` gate) -- state should
     # stay exactly frozen through the outage, then resume normally
-    # afterward with no crash or corrupted state.
+    # afterward with no crash or corrupted state. (main.py's long-outage
+    # budget handover deliberately applies limits straight to the
+    # reachable app's API and never touches the Arbitrator, so this
+    # still holds -- see test_long_peer_outage_hands_full_budget_...)
     rng = random.Random(7)
     qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
     sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
@@ -331,6 +334,165 @@ def test_qbit_outage_freezes_state_then_resumes_correctly():
     assert arbitrator.qbit_limit + arbitrator.sab_limit <= TOTAL + 1
     assert arbitrator.qbit_limit > 0
     assert arbitrator.sab_limit > 0
+
+
+def test_long_peer_outage_hands_full_budget_to_reachable_app_then_resumes_fair():
+    # Regression for the frozen-split gap: with one app's API down for
+    # longer than the handover window, main.py hands the reachable app the
+    # full effective budget (Arbitrator stays untouched -- arbitration
+    # needs both speeds). Short blips must NOT hand over (covered by the
+    # window check below). Mirrors main.py's gating: step() only when both
+    # reachable, handover only while they aren't, using the real
+    # should_hand_out_budget() rather than a copy of its logic.
+    from bandwidtharr.main import PEER_HANDOVER_SECONDS, should_hand_out_budget
+
+    rng = random.Random(11)
+    qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
+    sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
+    qbit.speed = TOTAL * 0.5
+    sab.speed = TOTAL * 0.5
+
+    arbitrator = Arbitrator(TOTAL)
+    now = 0.0
+    sab_unreachable_since = None
+    last_handover = None
+    applied_qbit = arbitrator.qbit_limit
+    sab_down_from, sab_down_to = 21, 56
+    out = []  # (cycle, applied_qbit, qbit_speed)
+
+    for cycle in range(1, 131):
+        sab_ok = not (sab_down_from <= cycle < sab_down_to)
+        if sab_ok:
+            sab_unreachable_since = None
+        elif sab_unreachable_since is None:
+            sab_unreachable_since = now
+
+        if sab_ok:
+            new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
+                now, qbit.speed, sab.speed, TOTAL, ACTIVE_THRESHOLD, SETTLE_SECONDS, False,
+            )
+            if qbit_apply:
+                arbitrator.qbit_limit = new_qbit
+            if sab_apply:
+                arbitrator.sab_limit = new_sab
+            last_handover = None
+            applied_qbit = arbitrator.qbit_limit
+            sab.step(arbitrator.sab_limit, cycle)
+        else:
+            if should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS) and last_handover != TOTAL:
+                applied_qbit = TOTAL
+                last_handover = TOTAL
+            sab.speed = 0.0  # container itself down, not just its API
+
+        qbit.step(applied_qbit, cycle)
+        out.append((cycle, applied_qbit, qbit.speed))
+        now += POLL_INTERVAL
+
+    by_cycle = {c: (a, s) for c, a, s in out}
+
+    # blip tolerance: no handover the moment the outage starts...
+    assert by_cycle[sab_down_from + 1][0] == round(TOTAL / 2)
+    # ...but once the outage has clearly outlasted the window, the full
+    # budget is handed over and actually used
+    handover_cycle = sab_down_from + int(PEER_HANDOVER_SECONDS / POLL_INTERVAL)
+    assert by_cycle[handover_cycle + 2][0] == TOTAL
+    assert by_cycle[sab_down_to - 1][1] >= TOTAL * 0.9
+
+    # re-entry: qbit already at ceiling reads the returning app as idle
+    # (both get the ceiling -- allocate()'s own designed behavior), so the
+    # transient double-ceiling burst builds a compensator penalty that then
+    # decays; measured to converge to within 6% of an even split ~52
+    # cycles (about 2.5 min at the default 3s poll) after the resume, and
+    # hold there -- slow, but monotonic and strictly within-budget-bound
+    # once both apps are genuinely active again.
+    assert abs(arbitrator.qbit_limit - arbitrator.sab_limit) <= TOTAL * 0.06
+    assert qbit.speed + sab.speed <= TOTAL * 1.06
+
+
+def test_link_flip_during_outage_delivers_pending_link_changed_on_resume():
+    # The link-check runs even while arbitration is skipped (one app's API
+    # down), so a confirmed link flip can happen in a cycle where step() is
+    # never called -- main.py must remember it (pending flag) and deliver
+    # link_changed=True on the first resumed cycle. Without that, the
+    # Arbitrator resumes against the new budget with old-scale bookkeeping
+    # and allocate()'s defensive floor clamp forces the documented spurious
+    # jump (e.g. a converged backup split resuming on primary forces
+    # qbit to the 10% floor and hands 90% to SAB) instead of classifying
+    # both apps from a neutral half-of-new-total baseline.
+    from bandwidtharr.main import PEER_HANDOVER_SECONDS, should_hand_out_budget
+
+    backup_total = TOTAL * 0.0625
+    rng = random.Random(12)
+    qbit = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
+    sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
+    qbit.speed = backup_total * 0.5
+    sab.speed = backup_total * 0.5
+
+    arbitrator = Arbitrator(backup_total)
+    now = 0.0
+    current_total = backup_total
+    sab_unreachable_since = None
+    last_handover = None
+    pending_link_changed = False
+    sab_down_from, sab_down_to, link_flip_cycle = 21, 51, 31
+    resumed = None
+    resumed_input_speeds = None
+    applied_trace = {}
+
+    for cycle in range(1, 62):
+        sab_ok = not (sab_down_from <= cycle < sab_down_to)
+        if sab_ok:
+            sab_unreachable_since = None
+        elif sab_unreachable_since is None:
+            sab_unreachable_since = now
+        if cycle == link_flip_cycle:
+            current_total = TOTAL
+            pending_link_changed = True  # main.py: flip detected in a cycle step() won't run
+
+        if sab_ok:
+            if cycle == sab_down_to:
+                resumed_input_speeds = (qbit.speed, sab.speed)
+            new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
+                now, qbit.speed, sab.speed, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, pending_link_changed,
+            )
+            pending_link_changed = False
+            if qbit_apply:
+                arbitrator.qbit_limit = new_qbit
+            if sab_apply:
+                arbitrator.sab_limit = new_sab
+            last_handover = None
+            applied_qbit = arbitrator.qbit_limit
+            if cycle == sab_down_to:
+                resumed = (applied_qbit, arbitrator.sab_limit)
+        else:
+            if should_hand_out_budget(now, sab_unreachable_since, PEER_HANDOVER_SECONDS) and last_handover != current_total:
+                applied_qbit = current_total  # handover tracks the NEW budget after the flip
+                last_handover = current_total
+
+        qbit.step(applied_qbit, cycle)
+        # sab's API was blind but its transfers kept running at the last
+        # limit it ever had applied -- the realistic binhex case
+        sab.step(arbitrator.sab_limit, cycle)
+        applied_trace[cycle] = applied_qbit
+        now += POLL_INTERVAL
+
+    # premise: qbit was handed the flipped-to (primary) budget mid-outage...
+    assert applied_trace[link_flip_cycle + 15] == TOTAL
+    # ...and at resume both apps were genuinely active at old backup scale
+    # (sab still pulling ~3 Mbps) with qbit demanding primary scale --
+    # otherwise the stale bookkeeping has nothing to get wrong
+    assert ACTIVE_THRESHOLD < resumed_input_speeds[1] < backup_total * 1.01
+    assert resumed_input_speeds[0] > TOTAL * 0.9
+
+    # The resumed cycle must apply a decision made against the NEW budget
+    # from the neutral half-reset baseline: qbit gets what it's actually
+    # demanding (primary scale minus sab's demonstrated share+headroom).
+    # Without the pending flag, the stale backup-scale bookkeeping makes
+    # allocate()'s defensive floor clamp force the documented artifact --
+    # qbit to the 10% floor with 90% handed to a barely-downloading SAB.
+    assert resumed is not None
+    assert resumed[0] > TOTAL * 0.7, "qbit should follow its real demand, not the stale-scale clamp"
+    assert resumed[1] <= TOTAL * 0.2 + 1, "sab keeps demonstrated speed plus headroom"
 
 
 def test_wan_link_flapping_stays_sane_no_runaway():

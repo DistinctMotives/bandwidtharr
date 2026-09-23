@@ -1,6 +1,27 @@
 import pytest
 
-from bandwidtharr.main import mbps_to_bytes, optional_mbps_env, should_log_repeated_failure
+from bandwidtharr.main import (
+    mbps_to_bytes,
+    optional_mbps_env,
+    should_hand_out_budget,
+    should_log_repeated_failure,
+)
+
+
+def test_should_hand_out_budget_no_outage():
+    assert should_hand_out_budget(now=1000.0, peer_unreachable_since=None, threshold_seconds=60.0) is False
+
+
+def test_should_hand_out_budget_blip_under_threshold():
+    assert should_hand_out_budget(now=1059.0, peer_unreachable_since=1000.0, threshold_seconds=60.0) is False
+
+
+def test_should_hand_out_budget_at_threshold():
+    assert should_hand_out_budget(now=1060.0, peer_unreachable_since=1000.0, threshold_seconds=60.0) is True
+
+
+def test_should_hand_out_budget_past_threshold():
+    assert should_hand_out_budget(now=5000.0, peer_unreachable_since=1000.0, threshold_seconds=60.0) is True
 
 
 def test_optional_mbps_env_unset(monkeypatch):
