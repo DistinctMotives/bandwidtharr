@@ -179,6 +179,7 @@ class Arbitrator:
         self.qbit_limit = total
         self.sab_limit = total
         self.last_reallocation_at = 0.0
+        self.last_qbit_apply_at = 0.0
         self.overshoot_compensator = OvershootCompensator()
         self._first_cycle = True
 
@@ -191,6 +192,7 @@ class Arbitrator:
         active_threshold: float,
         reallocation_settle_seconds: float,
         link_changed: bool,
+        overshoot_settle_seconds: float = 15.0,
     ) -> tuple[float, bool, float, bool, float]:
         """Call once per poll cycle. Returns (new_qbit_limit,
         qbit_should_apply, new_sab_limit, sab_should_apply,
@@ -225,13 +227,27 @@ class Arbitrator:
         if overshoot_penalty > 0:
             new_qbit_limit = max(total * MIN_SHARE_FRACTION, new_qbit_fair_share - overshoot_penalty)
 
+        # Overshoot correction reacts faster than fairness reallocation (it's
+        # a budget-safety mechanism, not a fairness one), but still needs
+        # its own settle gate -- otherwise a penalty that's merely decaying
+        # by a fixed fraction each cycle (or growing by a slightly different
+        # amount each cycle) forces a new limit to be pushed to qBittorrent
+        # on literally every poll, never giving its own rate limiter a
+        # stable target to actually settle into.
+        overshoot_apply = overshoot_penalty > 0 and new_qbit_limit != self.qbit_limit and (
+            first_cycle or link_changed or now - self.last_qbit_apply_at >= overshoot_settle_seconds
+        )
+
         # link_changed always applies fresh values to both sides -- the old
         # applied values are stale/meaningless against the new total
         # regardless of whether either happens to numerically match (the
         # sab_limit reset above would otherwise make that comparison miss a
         # coincidental match against its own just-reset value).
-        qbit_should_apply = link_changed or overshoot_penalty > 0 or (fairness_allowed and new_qbit_limit != self.qbit_limit)
+        qbit_should_apply = link_changed or (fairness_allowed and new_qbit_limit != self.qbit_limit) or overshoot_apply
         sab_should_apply = link_changed or (fairness_allowed and new_sab_limit != previous_sab_limit)
+
+        if qbit_should_apply:
+            self.last_qbit_apply_at = now
 
         if fairness_changed and fairness_allowed:
             self.qbit_fair_share = new_qbit_fair_share

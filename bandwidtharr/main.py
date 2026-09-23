@@ -40,6 +40,7 @@ def main() -> None:
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "3"))
     active_threshold = mbps_to_bytes(float(os.environ.get("ACTIVE_THRESHOLD_MBPS", "2")))
     reallocation_settle_seconds = float(os.environ.get("REALLOCATION_SETTLE_SECONDS", "30"))
+    overshoot_settle_seconds = float(os.environ.get("OVERSHOOT_SETTLE_SECONDS", "15"))
 
     link_detector_kind = os.environ.get("LINK_DETECTOR", "none").strip().lower()
     link_enabled = link_detector_kind not in ("", "none")
@@ -227,6 +228,7 @@ def main() -> None:
                 active_threshold=active_threshold,
                 reallocation_settle_seconds=reallocation_settle_seconds,
                 link_changed=link_changed,
+                overshoot_settle_seconds=overshoot_settle_seconds,
             )
 
             if qbit_should_apply:

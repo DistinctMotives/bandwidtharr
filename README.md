@@ -72,6 +72,7 @@ All configuration is via `.env` (see `.env.example`):
 | `POLL_INTERVAL_SECONDS`      | How often to poll and re-evaluate                                      | `3` |
 | `ACTIVE_THRESHOLD_MBPS`      | Speed above which an app counts as "active" rather than idle           | `2` |
 | `REALLOCATION_SETTLE_SECONDS` | Minimum time between fairness-driven reallocations, letting each app settle into its new share before being judged again. Doesn't affect overshoot-correction speed -- only how fast unused headroom gets reclaimed and handed to the other app | `30` |
+| `OVERSHOOT_SETTLE_SECONDS`    | Minimum time between overshoot-correction adjustments to qBittorrent's limit, so it gets a stable target to settle into instead of a new cap every poll. Faster than `REALLOCATION_SETTLE_SECONDS` since this is a budget-safety mechanism, not a fairness one | `15` |
 | `WEB_PORT`                   | Port the dashboard listens on inside the container                     | `80` |
 | `QBIT_UPLOAD_LIMIT_MBPS`      | Optional static cap on qBittorrent's upload speed. Untouched unless set; not shown in the dashboard | *(blank)* |
 | `QBIT_UPLOAD_LIMIT_BACKUP_MBPS` | Optional different upload cap while on the backup link (requires `QBIT_UPLOAD_LIMIT_MBPS` to also be set) | *(blank)* |

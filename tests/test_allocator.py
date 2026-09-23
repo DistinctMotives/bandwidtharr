@@ -290,3 +290,40 @@ def test_overshoot_compensator_penalty_never_exceeds_effective_total():
     for _ in range(200):
         penalty = comp.update(combined_speed=TOTAL * 5, effective_total=TOTAL)
     assert penalty <= TOTAL
+
+
+def test_overshoot_correction_is_debounced_not_applied_every_cycle():
+    # Regression test: before the overshoot-settle gate, ANY nonzero
+    # penalty -- whether still growing or merely decaying -- forced
+    # qBittorrent's limit to be re-applied on literally every poll cycle,
+    # never giving its own rate limiter a stable target to settle into.
+    # Drive a sustained overshoot (combined speed persistently above
+    # budget) and confirm applies are spaced out, not one per 3s poll.
+    arbitrator = Arbitrator(TOTAL)
+    now = 0.0
+    poll_interval = 3.0
+    qbit_speed = 55_000_000.0
+    sab_speed = 49_000_000.0  # combined 104M > 100M budget -> persistent overshoot
+    apply_count = 0
+    penalty_active_cycles = 0
+    skipped_while_penalty_active = False
+
+    for _ in range(20):
+        new_qbit, qbit_apply, _new_sab, _sab_apply, penalty = arbitrator.step(
+            now, qbit_speed, sab_speed, TOTAL, ACTIVE,
+            reallocation_settle_seconds=30.0, link_changed=False,
+            overshoot_settle_seconds=15.0,
+        )
+        if qbit_apply:
+            arbitrator.qbit_limit = new_qbit
+            apply_count += 1
+        if penalty > 0:
+            penalty_active_cycles += 1
+            if not qbit_apply:
+                skipped_while_penalty_active = True
+        now += poll_interval
+
+    assert penalty_active_cycles > 5, "test setup should sustain an active overshoot penalty"
+    assert skipped_while_penalty_active, "expected at least one cycle with a nonzero penalty that wasn't re-applied"
+    assert apply_count < penalty_active_cycles, "qbit limit should not be re-applied on every cycle the penalty is active"
+    assert arbitrator.qbit_limit < TOTAL / 2, "overshoot correction should still have taken effect"
