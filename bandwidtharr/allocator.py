@@ -130,11 +130,27 @@ class OvershootCompensator:
     caller's hysteresis gate, and decays gradually once actual usage is
     back within budget so a past correction doesn't linger once it's no
     longer needed.
+
+    Growth is capped at a small fraction of the budget per cycle: what's
+    being tracked is the *persistent, steady-state* correction size, and a
+    one-off transient excursion must not be allowed to inflate the penalty
+    toward the full budget. Without the cap, a transient overshoot many
+    times the size of the budget (e.g. both apps' speeds still ramping
+    down from primary-link levels against a backup budget that just became
+    dozens of times smaller) maxes the penalty out, and the slow decay then
+    leaves qBittorrent pinned at its floor for minutes over a discrepancy
+    that self-corrected within seconds. The cap doesn't delay a genuine
+    correction: applies are paced by the caller's overshoot settle gate
+    anyway, and several cycles of growth at this rate always reach a
+    realistic correction size (qBittorrent's rate-limiting imprecision is
+    a few percent of the budget, not multiples of it) before the gate next
+    allows one.
     """
 
     MARGIN_FRACTION = 0.03
     CONFIRM_CYCLES = 2
     DECAY_FRACTION = 0.01
+    GROWTH_FRACTION = 0.02
 
     def __init__(self):
         self.penalty = 0.0
@@ -150,7 +166,8 @@ class OvershootCompensator:
         if overshoot > margin:
             self._over_count += 1
             if self._over_count >= self.CONFIRM_CYCLES:
-                self.penalty = min(effective_total, self.penalty + overshoot)
+                increment = min(overshoot, effective_total * self.GROWTH_FRACTION)
+                self.penalty = min(effective_total, self.penalty + increment)
         else:
             self._over_count = 0
             self.penalty = max(0.0, self.penalty - effective_total * self.DECAY_FRACTION)
@@ -212,6 +229,17 @@ class Arbitrator:
             # immediately (10% of the new total), purely because 25 fell
             # below that floor -- not because of any fairness decision.
             self.qbit_fair_share = self.sab_limit = total / 2
+            # Same staleness argument applies to the overshoot penalty:
+            # it's sized against the OLD total, so against a much smaller
+            # new budget even a modest correction immediately slams
+            # qBittorrent's limit to the floor, where it lingers for as
+            # long as the slow decay takes against the new total -- and
+            # being floor-pinned also makes qbit read as "slack" to
+            # allocate(), handing its share away. Any overshoot genuinely
+            # ongoing against the new budget re-confirms and re-grows a
+            # correctly-sized penalty within a few cycles, so resetting is
+            # safe in the conservative direction.
+            self.overshoot_compensator = OvershootCompensator()
 
         new_qbit_fair_share, new_sab_limit, saturating = allocate(
             qbit_speed, sab_speed, self.qbit_fair_share, self.sab_limit, total, active_threshold,

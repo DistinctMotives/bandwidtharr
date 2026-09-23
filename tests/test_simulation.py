@@ -217,6 +217,73 @@ def test_recovery_from_backup_to_primary_is_immediate_not_stuck_for_minutes():
         assert abs(qbit_limit - sab_limit) <= TOTAL * 0.01
 
 
+def test_wan_failover_with_active_overshoot_correction_does_not_pin_qbit_at_floor():
+    # Regression: with a standing overshoot correction built up at primary
+    # scale, failing over to a much smaller backup budget used to pin
+    # qBittorrent at its MIN_SHARE_FRACTION floor for minutes -- both the
+    # carried-over penalty itself (sized against the OLD total) and the
+    # huge transient overshoot while both apps' speeds ramp down from
+    # primary levels to the new budget independently exceed any correction
+    # the small backup budget can absorb. While floor-pinned (penalty
+    # decays at only 1% of the total per cycle), qBittorrent also reads as
+    # "slack" to allocate(), so fairness hands its share to SABnzbd
+    # permanently. Simulation verified: without reset-on-link-change plus
+    # a per-cycle penalty growth cap, qbit stays at the floor for the
+    # entire window and the split ends 0.625/4.94 instead of ~50/50.
+    rng = random.Random(3)
+    qbit = SimulatedApp(true_max=TOTAL * 1.1, overshoot_factor=1.10, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
+    sab = SimulatedApp(true_max=TOTAL * 1.1, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.0, rng=rng)
+    qbit.speed = TOTAL * 0.5
+    sab.speed = TOTAL * 0.5
+
+    backup_total = TOTAL * 0.0625  # e.g. 50 of 800 Mbps
+    failover_cycle = 30
+    arbitrator = Arbitrator(TOTAL)
+    now = 0.0
+    penalty_at_failover = None
+    post_failover = []  # (qbit_limit, combined_speed) from the failover cycle onward
+
+    current_total = TOTAL
+    for cycle in range(1, failover_cycle + 41):
+        link_changed = cycle == failover_cycle
+        if link_changed:
+            current_total = backup_total
+            penalty_at_failover = arbitrator.overshoot_compensator.penalty
+
+        new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
+            now, qbit.speed, sab.speed, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, link_changed,
+        )
+        if qbit_apply:
+            arbitrator.qbit_limit = new_qbit
+        if sab_apply:
+            arbitrator.sab_limit = new_sab
+        qbit_speed = qbit.step(arbitrator.qbit_limit, cycle)
+        sab_speed = sab.step(arbitrator.sab_limit, cycle)
+        if cycle >= failover_cycle:
+            post_failover.append((arbitrator.qbit_limit, qbit_speed + sab_speed))
+        now += POLL_INTERVAL
+
+    # scenario premise: there really is a standing, primary-scale correction
+    # in effect at the moment of failover -- without this, the test proves
+    # nothing about carrying one over
+    assert penalty_at_failover > TOTAL * 0.01
+
+    # qbit's applied limit never collapses toward the floor (a brief dip a
+    # bit under its fair half-share during the ramp-down transient is
+    # healthy and self-correcting -- what must not happen is the
+    # floor-pinning that leaves it at MIN_SHARE_FRACTION for minutes)
+    qbit_limits = [ql for ql, _ in post_failover]
+    assert min(qbit_limits) >= backup_total * 0.25
+
+    # the ramp-down transient is brief -- no sustained stretch of the
+    # backup budget going unused
+    wasted = sum(1 for _ql, combined in post_failover if combined < backup_total * 0.8)
+    assert wasted <= 2
+
+    # and it ends at a roughly even split, not permanently skewed to SAB
+    assert abs(arbitrator.qbit_limit - arbitrator.sab_limit) <= backup_total * 0.05
+
+
 def test_qbit_outage_freezes_state_then_resumes_correctly():
     # A real network/API outage means main.py simply doesn't call
     # Arbitrator.step() for however many cycles qbit is unreachable
