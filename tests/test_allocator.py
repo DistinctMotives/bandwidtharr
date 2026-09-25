@@ -348,3 +348,27 @@ def test_overshoot_correction_is_debounced_not_applied_every_cycle():
     assert skipped_while_penalty_active, "expected at least one cycle with a nonzero penalty that wasn't re-applied"
     assert apply_count < penalty_active_cycles, "qbit limit should not be re-applied on every cycle the penalty is active"
     assert arbitrator.qbit_limit < TOTAL / 2, "overshoot correction should still have taken effect"
+
+
+def test_failed_first_apply_is_retried_until_one_succeeds():
+    # Regression: the forced first-cycle apply used to be keyed on the
+    # first step() alone, so if that apply failed, the tracked (assumed)
+    # limit still matched the next decision and the stale manual limit in
+    # the app was never overwritten.
+    arbitrator = Arbitrator(TOTAL)
+    for now in (0.0, 3.0, 6.0):
+        _q, qbit_apply, _s, sab_apply, _p = arbitrator.step(now, 0.0, 0.0, TOTAL, ACTIVE, 30.0, False)
+        # qbit's apply lands on the first cycle and isn't repeated; sab's
+        # keeps failing, so it keeps being recommended
+        assert qbit_apply == (now == 0.0)
+        assert sab_apply
+        if qbit_apply:
+            arbitrator.qbit_limit = TOTAL
+
+    _q, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(9.0, 0.0, 0.0, TOTAL, ACTIVE, 30.0, False)
+    assert not qbit_apply
+    assert sab_apply
+    arbitrator.sab_limit = new_sab
+
+    _q, qbit_apply, _s, sab_apply, _p = arbitrator.step(12.0, 0.0, 0.0, TOTAL, ACTIVE, 30.0, False)
+    assert not qbit_apply and not sab_apply
