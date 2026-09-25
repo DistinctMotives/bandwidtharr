@@ -144,3 +144,31 @@ def test_asn_lookup_failure_redacts_public_ip(monkeypatch):
     assert "7.113.0.203" not in message
     assert "***" in message
     assert exc_info.value.__cause__ is None and exc_info.value.__suppress_context__
+
+
+@pytest.mark.parametrize("rcode, name", [(2, "SERVFAIL"), (3, "NXDOMAIN"), (5, "REFUSED"), (9, "RCODE 9")])
+def test_dns_error_rcode_raises_clear_error(monkeypatch, rcode, name):
+    import struct
+
+    import bandwidtharr.link_detector as ld
+
+    monkeypatch.setattr(ld.random, "randint", lambda a, b: 0x1234)
+
+    class FakeSocket:
+        def settimeout(self, timeout):
+            pass
+
+        def sendto(self, packet, addr):
+            pass
+
+        def recvfrom(self, size):
+            # response bit + recursion flags, the given RCODE, no records
+            return struct.pack("!HHHHHH", 0x1234, 0x8180 | rcode, 0, 0, 0, 0), ("208.67.222.222", 53)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ld.socket, "socket", lambda *a, **k: FakeSocket())
+
+    with pytest.raises(ValueError, match=f"failed: {name}"):
+        ld._query_a_record("myip.opendns.com", "208.67.222.222", 1.0)

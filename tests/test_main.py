@@ -303,6 +303,23 @@ def test_app_unreachable_at_startup_gets_its_limit_applied_once_it_appears():
     assert h.sab.download_limits == [round(TOTAL)]
 
 
+def test_repeated_limit_set_failures_are_log_throttled(caplog):
+    h = Harness()
+    h.qbit.fail_sets = True
+    with caplog.at_level("WARNING", logger="bandwidtharr"):
+        h.run(25)
+    warnings = [r.getMessage() for r in caplog.records if "failed to set qbit limit" in r.getMessage()]
+    assert warnings == [
+        "failed to set qbit limit (1x): set failed",
+        "failed to set qbit limit (20x): set failed",
+    ]
+
+    # a success resets the count, so the next failure streak logs again
+    h.qbit.fail_sets = False
+    h.run()
+    assert h.controller.qbit_set_fail_count == 0
+
+
 def link_harness(**overrides):
     return Harness(
         link_detector_kind="public_ip", backup_total=BACKUP_TOTAL,

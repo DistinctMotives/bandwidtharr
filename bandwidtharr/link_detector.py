@@ -28,6 +28,7 @@ BACKUP = "backup"
 _DNS_HEADER = struct.Struct("!HHHHHH")
 _QTYPE_A = 1
 _QTYPE_TXT = 16
+_RCODE_NAMES = {1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED"}
 
 
 class LinkDetector:
@@ -85,9 +86,14 @@ def _dns_query(hostname: str, resolver: str, timeout: float, qtype: int) -> byte
     finally:
         sock.close()
 
-    resp_id, _flags, qdcount, ancount, _nscount, _arcount = _DNS_HEADER.unpack_from(response, 0)
+    resp_id, flags, qdcount, ancount, _nscount, _arcount = _DNS_HEADER.unpack_from(response, 0)
     if resp_id != txid:
         raise ValueError("DNS response transaction ID mismatch")
+    rcode = flags & 0x000F
+    if rcode != 0:
+        # A server-side failure otherwise surfaces as a misleading "no
+        # matching record" once the (empty) answer section is parsed.
+        raise ValueError(f"DNS query for {hostname} failed: {_RCODE_NAMES.get(rcode, f'RCODE {rcode}')}")
 
     offset = 12
     for _ in range(qdcount):
