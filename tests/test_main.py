@@ -276,6 +276,33 @@ def test_failed_limit_set_keeps_tracked_limit_and_reports_error():
     assert snap["sab_limit"] == TOTAL / 2
 
 
+def test_failed_first_apply_is_retried_next_cycle():
+    h = Harness()
+    h.qbit.fail_sets = True
+    snap = h.run()
+    assert h.qbit.download_limits == []
+    assert snap["qbit_ok"] is False
+
+    h.qbit.fail_sets = False
+    snap = h.run()
+    assert h.qbit.download_limits == [round(TOTAL)]
+    assert snap["qbit_ok"] is True
+
+    h.run(3)
+    assert h.qbit.download_limits == [round(TOTAL)]  # applied once, not every cycle
+
+
+def test_app_unreachable_at_startup_gets_its_limit_applied_once_it_appears():
+    h = Harness()
+    h.sab.reachable = False
+    h.run_for(PEER_OUTAGE_CONFIRM_SECONDS + 2 * POLL)
+    assert h.sab.download_limits == []
+
+    h.sab.reachable = True
+    h.run()
+    assert h.sab.download_limits == [round(TOTAL)]
+
+
 def link_harness(**overrides):
     return Harness(
         link_detector_kind="public_ip", backup_total=BACKUP_TOTAL,

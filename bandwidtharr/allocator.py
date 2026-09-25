@@ -192,15 +192,39 @@ class Arbitrator:
 
     def __init__(self, total: float):
         self.qbit_fair_share = total
-        # Assumed, not known: whatever the apps really have is overwritten
-        # on the first cycle regardless (see step()).
-        self.qbit_limit = total
-        self.sab_limit = total
+        # Assumed, not known: whatever the apps really have is unknown
+        # until the caller records a successful apply through the setters
+        # below, and step() keeps recommending an apply until then (see
+        # step()).
+        self._qbit_limit = total
+        self._sab_limit = total
+        self._qbit_limit_known = False
+        self._sab_limit_known = False
         self.last_reallocation_at = 0.0
         self.last_qbit_apply_at = 0.0
         self.overshoot_compensator = OvershootCompensator()
         self._last_total = total
         self._first_cycle = True
+
+    # Setting either limit is the caller's "this value is now really
+    # applied in the app" -- which is also what makes it known.
+    @property
+    def qbit_limit(self) -> float:
+        return self._qbit_limit
+
+    @qbit_limit.setter
+    def qbit_limit(self, value: float) -> None:
+        self._qbit_limit = value
+        self._qbit_limit_known = True
+
+    @property
+    def sab_limit(self) -> float:
+        return self._sab_limit
+
+    @sab_limit.setter
+    def sab_limit(self, value: float) -> None:
+        self._sab_limit = value
+        self._sab_limit_known = True
 
     def step(
         self,
@@ -290,13 +314,21 @@ class Arbitrator:
         # A rebaseline bypasses the settle gate (via fairness_allowed) but is
         # otherwise an ordinary decision: nothing is re-applied when the new
         # value already matches what the app has -- a no-op set would only
-        # restart the overshoot settle window for nothing. The first cycle
-        # is the exception: the tracked values start as an assumption (see
-        # __init__), and whatever stale/manual limit an app actually has
-        # must be overwritten even if the decision happens to be "full
-        # budget" -- which it always is while at most one app is active.
-        qbit_should_apply = first_cycle or (fairness_allowed and new_qbit_limit != self.qbit_limit) or overshoot_apply
-        sab_should_apply = first_cycle or (fairness_allowed and new_sab_limit != self.sab_limit)
+        # restart the overshoot settle window for nothing. An app whose
+        # real limit isn't known yet is the exception: the tracked values
+        # start as an assumption (see __init__), and whatever stale/manual
+        # limit an app actually has must be overwritten even if the
+        # decision happens to be "full budget" -- which it always is while
+        # at most one app is active. Keyed on a confirmed apply rather than
+        # on the first cycle alone, so a first apply that fails (or never
+        # happens, the app being unreachable) is retried instead of
+        # leaving the stale limit in place for good.
+        qbit_should_apply = (
+            not self._qbit_limit_known
+            or (fairness_allowed and new_qbit_limit != self.qbit_limit)
+            or overshoot_apply
+        )
+        sab_should_apply = not self._sab_limit_known or (fairness_allowed and new_sab_limit != self.sab_limit)
 
         if qbit_should_apply:
             self.last_qbit_apply_at = now
