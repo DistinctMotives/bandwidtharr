@@ -19,6 +19,12 @@ class QBittorrentClient:
             timeout=self.timeout,
         )
         resp.raise_for_status()
+        # qBittorrent answers bad credentials with a plain 200 and a "Fails."
+        # body, not an HTTP error -- without this check the client would
+        # believe it's logged in, and every later call would just surface a
+        # generic 403 instead of the actual cause.
+        if resp.text.strip() == "Fails.":
+            raise RuntimeError("qBittorrent login failed: check QBIT_USER/QBIT_PASS")
         self._logged_in = True
 
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:

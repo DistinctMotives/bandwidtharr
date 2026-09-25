@@ -123,3 +123,24 @@ def test_build_link_detector_defaults_to_asn_match():
     assert isinstance(detector, AsnMatchDetector)
 
 
+
+
+def test_asn_lookup_failure_redacts_public_ip(monkeypatch):
+    import bandwidtharr.link_detector as ld
+
+    monkeypatch.setattr(ld, "_query_a_record", lambda *a, **k: "203.0.113.7")
+
+    def failing_txt(hostname, *a, **k):
+        raise ValueError(f"no matching record found in response for {hostname} (ip 203.0.113.7)")
+
+    monkeypatch.setattr(ld, "_query_txt_record", failing_txt)
+    detector = AsnMatchDetector("myip.opendns.com", "208.67.222.222", "Starlink")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        detector.check()
+
+    message = str(exc_info.value)
+    assert "203.0.113.7" not in message
+    assert "7.113.0.203" not in message
+    assert "***" in message
+    assert exc_info.value.__cause__ is None and exc_info.value.__suppress_context__
