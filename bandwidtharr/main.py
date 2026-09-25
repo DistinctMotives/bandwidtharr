@@ -42,6 +42,12 @@ def should_log_repeated_failure(count: int) -> bool:
 # sitting at a split sized for two.
 PEER_OUTAGE_CONFIRM_SECONDS = 60.0
 
+# Match the binhex/arch-qbittorrentvpn and binhex/arch-sabnzbdvpn images'
+# container names and ports, as documented in the README. Used when the
+# variable is unset or blank.
+DEFAULT_QBIT_URL = "http://binhex-qbittorrentvpn:8080"
+DEFAULT_SAB_URL = "http://binhex-sabnzbdvpn:8080"
+
 
 def outage_confirmed(now: float, unreachable_since: float | None, threshold_seconds: float) -> bool:
     """True once an app has been continuously unreachable (its first
@@ -176,6 +182,8 @@ class Controller:
         self.link_fail_count = 0
         self.last_applied_upload_limit: float | None = None
         self.qbit_upload_fail_count = 0
+        self.qbit_set_fail_count = 0
+        self.sab_set_fail_count = 0
         # Sticky "the current shares are stale, start both apps from a
         # neutral baseline" request for the Arbitrator -- raised by a
         # confirmed link flip or by an app returning from a confirmed
@@ -380,9 +388,14 @@ class Controller:
                     f" (overshoot -{overshoot_penalty * 8 / 1_000_000:.0f}Mbps)" if overshoot_penalty > 0 else "",
                 )
                 arbitrator.qbit_limit = new_qbit_limit
+                self.qbit_set_fail_count = 0
             except Exception as e:
                 qbit_set_error = str(e)
-                log.warning("failed to set qbit limit: %s", e)
+                # Throttled like the read failures: an app whose limit isn't
+                # known yet is retried every cycle (see Arbitrator.step()).
+                self.qbit_set_fail_count += 1
+                if should_log_repeated_failure(self.qbit_set_fail_count):
+                    log.warning("failed to set qbit limit (%dx): %s", self.qbit_set_fail_count, e)
 
         if sab_should_apply and sab_ok:
             try:
@@ -392,9 +405,12 @@ class Controller:
                     arbitrator.sab_limit * 8 / 1_000_000, new_sab_limit * 8 / 1_000_000,
                 )
                 arbitrator.sab_limit = new_sab_limit
+                self.sab_set_fail_count = 0
             except Exception as e:
                 sab_set_error = str(e)
-                log.warning("failed to set sab limit: %s", e)
+                self.sab_set_fail_count += 1
+                if should_log_repeated_failure(self.sab_set_fail_count):
+                    log.warning("failed to set sab limit (%dx): %s", self.sab_set_fail_count, e)
 
         return qbit_set_error, sab_set_error
 
@@ -406,12 +422,12 @@ def main() -> None:
     slack_notifier = build_slack_notifier(os.environ)
 
     qbit = QBittorrentClient(
-        base_url=os.environ["QBIT_URL"],
+        base_url=os.environ.get("QBIT_URL") or DEFAULT_QBIT_URL,
         username=os.environ.get("QBIT_USER") or None,
         password=os.environ.get("QBIT_PASS") or None,
     )
     sab = SabnzbdClient(
-        base_url=os.environ["SAB_URL"],
+        base_url=os.environ.get("SAB_URL") or DEFAULT_SAB_URL,
         api_key=os.environ["SAB_API_KEY"],
     )
 
