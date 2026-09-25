@@ -149,8 +149,11 @@ BACKUP_ISP_MATCH=Starlink,SpaceX,Space Exploration
   serving your traffic, so it's correct from the first check regardless
   of which link is active at startup, and unaffected by your primary
   ISP's dynamic IP rotating.
-- **Fail-safe:** an unrecognized result (a hiccup, an outage) is treated as
-  primary -- i.e. it fails toward *not* throttling, never toward backup.
+- **Fail-safe:** an ISP that doesn't match `BACKUP_ISP_MATCH` is treated
+  as primary -- i.e. it fails toward *not* throttling, never toward
+  backup. A check that fails outright (a dropped DNS query, the lookup
+  service down) changes nothing: the current link state and budget are
+  kept until a check succeeds again.
 - **Debounce:** two consecutive matching checks are required before a
   switch actually happens, so a single transient blip can't flap the
   budget.

@@ -186,7 +186,18 @@ class AsnMatchDetector(LinkDetector):
         deadline = time.monotonic() + self.timeout
         ip = _query_a_record(self.lookup_host, self.resolver, _remaining(deadline))
         if ip != self._cached_ip:
-            self._cached_org_name = _query_asn_org_name(ip, self.resolver, deadline)
+            try:
+                self._cached_org_name = _query_asn_org_name(ip, self.resolver, deadline)
+            except Exception as e:
+                # The ASN queries embed the public IP (plainly, and reversed
+                # in the query hostname), and a check's error string ends up
+                # on the unauthenticated dashboard -- which must never show
+                # the detected IP. `from None` for the same reason as
+                # sabnzbd.py's API-key redaction.
+                reversed_ip = ".".join(reversed(ip.split(".")))
+                raise RuntimeError(
+                    f"ASN lookup failed: {str(e).replace(ip, '***').replace(reversed_ip, '***')}"
+                ) from None
             self._cached_ip = ip
         return classify_isp(self._cached_org_name, self.backup_match), _format_detail(ip, self._cached_org_name)
 
