@@ -118,27 +118,16 @@ def test_genuinely_asymmetric_demand_settles_near_true_need():
 
 def test_demand_recovery_after_slack_climbs_back_to_fair_share():
     rng = random.Random(2)
-    qbit = SimulatedApp(true_max=TOTAL * 0.15, overshoot_factor=1.0, ramp_lag_cycles=3, noise_fraction=0.02, rng=rng)
+    # more torrent peers connect at cycle 31
+    qbit = SimulatedApp(
+        true_max=lambda cycle: TOTAL if cycle >= 31 else TOTAL * 0.15,
+        overshoot_factor=1.0, ramp_lag_cycles=3, noise_fraction=0.02, rng=rng,
+    )
     sab = SimulatedApp(true_max=TOTAL, overshoot_factor=1.0, ramp_lag_cycles=2, noise_fraction=0.02, rng=rng)
     qbit.speed = TOTAL * 0.02
     sab.speed = TOTAL
 
-    arbitrator = Arbitrator(TOTAL)
-    now = 0.0
-    for cycle in range(1, 251):
-        if cycle == 31:
-            qbit._true_max = TOTAL  # more torrent peers connect
-        new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-            now, qbit.speed, sab.speed, TOTAL, ACTIVE_THRESHOLD, SETTLE_SECONDS, False,
-        )
-        if qbit_apply:
-            arbitrator.qbit_limit = new_qbit
-        if sab_apply:
-            arbitrator.sab_limit = new_sab
-        qbit.step(arbitrator.qbit_limit, cycle)
-        sab.step(arbitrator.sab_limit, cycle)
-        now += POLL_INTERVAL
-
+    arbitrator, _history = run_simulation(TOTAL, qbit, sab, cycles=250)
     assert abs(arbitrator.qbit_limit - arbitrator.sab_limit) <= TOTAL * 0.02
 
 
@@ -511,26 +500,16 @@ def test_wan_link_flapping_stays_sane_no_runaway():
     sab.speed = TOTAL * 0.5
 
     backup_total = TOTAL * 0.0625
-    arbitrator = Arbitrator(TOTAL)
-    now = 0.0
-    current_total = TOTAL
-    for cycle in range(1, 61):
-        link_changed = cycle % 5 == 0  # flap every 5 cycles (~15s)
-        if link_changed:
-            current_total = backup_total if current_total == TOTAL else TOTAL
-        new_qbit, qbit_apply, new_sab, sab_apply, _p = arbitrator.step(
-            now, qbit.speed, sab.speed, current_total, ACTIVE_THRESHOLD, SETTLE_SECONDS, link_changed,
-        )
-        if qbit_apply:
-            arbitrator.qbit_limit = new_qbit
-        if sab_apply:
-            arbitrator.sab_limit = new_sab
-        qbit.step(arbitrator.qbit_limit, cycle)
-        sab.step(arbitrator.sab_limit, cycle)
-        assert arbitrator.qbit_limit >= 0
-        assert arbitrator.sab_limit >= 0
-        assert arbitrator.qbit_limit + arbitrator.sab_limit <= current_total + 1
-        now += POLL_INTERVAL
+
+    def total_at(cycle):  # flaps every 5 cycles (~15s): backup during 5-9, 15-19, ...
+        return backup_total if (cycle // 5) % 2 == 1 else TOTAL
+
+    schedule = {cycle: total_at(cycle) for cycle in range(5, 61, 5)}
+    _arbitrator, history = run_simulation(TOTAL, qbit, sab, cycles=60, total_schedule=schedule)
+    for cycle, (qbit_limit, sab_limit, _, _) in enumerate(history, 1):
+        assert qbit_limit >= 0
+        assert sab_limit >= 0
+        assert qbit_limit + sab_limit <= total_at(cycle) + 1
 
 
 def test_flaky_link_detector_blips_are_debounced_before_reaching_arbitrator():

@@ -241,12 +241,13 @@ class Controller:
 
         arbitrator = self.arbitrator
         self.state.update(
-            effective_total, qbit_speed, arbitrator.qbit_limit, sab_speed, arbitrator.sab_limit,
+            link_event=link_event,
+            total=effective_total, qbit_speed=qbit_speed, qbit_limit=arbitrator.qbit_limit,
+            sab_speed=sab_speed, sab_limit=arbitrator.sab_limit,
             qbit_ok=qbit_ok, sab_ok=sab_ok, qbit_error=qbit_error, sab_error=sab_error,
             link_enabled=cfg.link_enabled, active_link=self.link_tracker.confirmed,
             link_ok=self.link_ok, link_error=self.link_error,
             last_link_check_at=self.last_link_check_at, next_link_check=self.next_link_check,
-            downloading=is_active, link_event=link_event,
         )
 
         log.debug(

@@ -2,13 +2,12 @@
 failed over from a wired connection to Starlink or 5G), so main.py can swap
 in a lower total budget while on backup.
 
-Kept vendor-agnostic and pluggable: `LinkDetector` is the interface a future
-vendor-specific detector would also implement, without any changes to
-main.py's loop or allocator.py. `build_link_detector()` selects
-`AsnMatchDetector`, which classifies the ASN/org behind the current public
-IP via plain DNS queries against Team Cymru's free public IP-to-ASN
-service -- no third-party HTTP call. BACKUP_ISP_MATCH is required whenever
-LINK_DETECTOR=public_ip is set.
+A detector is anything with `check() -> (state, detail)`: state is PRIMARY or
+BACKUP, detail a short human-readable string for display ("" if nothing
+meaningful). `build_link_detector()` selects `AsnMatchDetector`, which
+classifies the ASN/org behind the current public IP via plain DNS queries
+against Team Cymru's free public IP-to-ASN service -- no third-party HTTP
+call. BACKUP_ISP_MATCH is required whenever LINK_DETECTOR=public_ip is set.
 
 Same conventions as qbittorrent.py/sabnzbd.py: raise on any check failure,
 never guess -- the caller decides what "unknown" means.
@@ -31,16 +30,7 @@ _QTYPE_TXT = 16
 _RCODE_NAMES = {1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP", 5: "REFUSED"}
 
 
-class LinkDetector:
-    def check(self) -> tuple[str, str]:
-        """Return (state, detail): state is PRIMARY or BACKUP, detail is a
-        short human-readable string (e.g. the current public IP/ISP) for
-        display, "" if there's nothing meaningful to show. Raises on any
-        failure to determine the state."""
-        raise NotImplementedError
-
-
-class NullDetector(LinkDetector):
+class NullDetector:
     """No detector configured -- always primary, so the feature is a no-op
     unless explicitly enabled via LINK_DETECTOR."""
 
@@ -168,7 +158,7 @@ def _format_detail(ip: str, isp_string: str) -> str:
     return ip or isp_string
 
 
-class AsnMatchDetector(LinkDetector):
+class AsnMatchDetector:
     """Default lookup mechanism: identifies the ASN/org behind your current
     public IP via up to three plain DNS queries -- no third-party HTTP call.
     A query for `lookup_host` sent straight to `resolver` (e.g. OpenDNS's
@@ -262,7 +252,7 @@ def next_link_check_decision(
     return check_due, interval
 
 
-def build_link_detector(env: dict) -> LinkDetector:
+def build_link_detector(env: dict):
     kind = env.get("LINK_DETECTOR", "none").strip().lower()
     if kind in ("", "none"):
         return NullDetector()
